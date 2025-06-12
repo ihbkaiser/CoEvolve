@@ -12,7 +12,7 @@ dotenv.load_dotenv()
 class Gemini(BaseModel):
     def __init__(self, temperature=0):
         genai.configure(api_key=os.getenv("Google_API_KEY"))
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.model = genai.GenerativeModel('gemini-2.0-flash')
 
     # @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
     def prompt(self, processed_input):
@@ -28,6 +28,7 @@ class Gemini(BaseModel):
                 )
                 return response.text, 0, 0
             except Exception as e:
+                print(f"Attempt {i+1} failed with error: {e}")
                 time.sleep(2)
         
         return response.text, 0, 0
