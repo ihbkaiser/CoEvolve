@@ -408,14 +408,14 @@ Your response must follow the following XML format exactly:
         except (TypeError, ValueError):
             score = 0.0
         return max(0.0, min(score, 1.0))
-    def collaborative_decision(self, plan: str, code: str, outcomes: str) -> str:
+    def collaborative_decision(self, plan: str, code: str, outcomes: str, item) -> str:
         """
         Compute D_final = consensus over plan, code, and content analyses.
         Returns either 'update plan' or 'update code only'.
         """
-        A_plan = self.plan_analysis(plan, outcomes, self.data.get_prompt(self.current_item))
-        A_code = self.code_analysis(code, outcomes, self.data.get_prompt(self.current_item))
-        A_content = self.content_analysis(self.data.get_prompt(self.current_item), plan, code)
+        A_plan = self.plan_analysis(plan, outcomes, self.data.get_prompt(item))
+        A_code = self.code_analysis(code, outcomes, self.data.get_prompt(item))
+        A_content = self.content_analysis(self.data.get_prompt(item), plan, code)
 
         decisions = ['update plan', 'update code only']
         scores = {}
@@ -642,8 +642,10 @@ Your response must follow the following XML format exactly:
                     decision = self.collaborative_decision(
                         planning,
                         code,
-                        test_log
+                        test_log,
+                        item
                     )
+                    print("Decision made: ", decision)
                     if decision == 'update plan':
                         A_plan = self.plan_analysis(
                             planning, test_log, self.data.get_prompt(item)
@@ -656,6 +658,7 @@ Your response must follow the following XML format exactly:
                     "Important: return only the revised plan text. Important: You should give only the updated planning to solve the problem. Do not add extra explanation or words."
                 )}]
                         revised_plan, p_up, c_up = self.gpt_chat(processed_input=prompt_update)
+                        print("Revised plan: ", revised_plan, flush=True)
                         item['api_calls'] += 1
                         planning = revised_plan.strip()
                         input_for_new_code_generation = [
