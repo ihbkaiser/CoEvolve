@@ -21,6 +21,7 @@ parser.add_argument(
     default="HumanEval", 
     choices=[
         "HumanEval", 
+        "HumanEvalET",
         "MBPP", 
         "APPS",
         "xCodeEval", 
@@ -37,6 +38,7 @@ parser.add_argument(
         "SelfPlanning",
         "Analogical",
         "MapCoder",
+        "CoEvolve"
     ]
 )
 parser.add_argument(
