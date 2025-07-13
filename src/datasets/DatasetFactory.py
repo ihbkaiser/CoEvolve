@@ -17,6 +17,8 @@ class DatasetFactory:
             return XCodeDataset
         elif dataset_name == "HumanEval":
             return HumanDataset
+        elif dataset_name == "HumanEvalET":
+            return HumanDataset
         elif dataset_name == "Human":
             return HumanDataset
         elif dataset_name == "CC":

@@ -24,7 +24,7 @@ parser.add_argument(
         "HumanEvalET",
         "MBPP", 
         "APPS",
-        "xCodeEval", 
+        "XCode", 
         "CC", 
     ]
 )
