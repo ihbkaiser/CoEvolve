@@ -691,8 +691,8 @@ Important: Return only the summary text. No extra words.
                         self.language
                     )
 
-                    # if passed:
-                    #     break
+                    if passed:
+                        break
                     # if not break then run decision making  
                     decision = self.collaborative_decision(
                         planning,
