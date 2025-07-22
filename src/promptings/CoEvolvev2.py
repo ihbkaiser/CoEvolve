@@ -5,7 +5,7 @@ import json
 import re
 import sys
 import time
-
+from datetime import datetime
 from copy import deepcopy
 import xml.etree.ElementTree as ET
 
@@ -24,8 +24,6 @@ from evaluations.func_evaluate import evaluate_io
 import numpy as np
 from typing import Optional, Dict
 
-from typing import Optional, Dict
-
 class ReasoningTrajectory:
     def __init__(self, t: int):
         self.t = t  
@@ -36,13 +34,11 @@ class ReasoningTrajectory:
         iteration: int,
         error_analysis: Dict,
         problem: str,
+        problem_understanding: str,
         plan: str,
         code: Optional[str] = None,
         historical_logs: Optional[Dict] = None
     ) -> str:
-        """
-        Generates a structured prompt for refining a plan based on error analysis and iteration history.
-        """
         test_results = error_analysis.get('test_results', '')
         analysis = error_analysis.get('analysis', '')
         success_rate = error_analysis.get('success_rate', '0')
@@ -53,6 +49,7 @@ You are the Reasoning Trajectory module (R_traj) in the CoEvolve framework, an a
 
 ### Context
 - Problem: {problem}
+- Problem Understanding: {problem_understanding}
 - Initial Plan: {plan}
 - Test Results: {test_results}
 - Error Analysis: {analysis}
@@ -60,8 +57,8 @@ You are the Reasoning Trajectory module (R_traj) in the CoEvolve framework, an a
 
 ### Task
 Create the initial reasoning prompt for plan revision in iteration 1. With no historical data available, focus on:
-1. Anticipating potential weaknesses in the plan based on the problem's details.
-2. Drawing on planning strategies and common pitfalls.
+1. Anticipating potential weaknesses in the plan based on the problem's details and understanding.
+2. Drawing on planning strategies and common pitfalls, considering edge cases and special cases.
 3. Setting forward-looking priorities for a thorough plan.
 
 ### Structured Output
@@ -92,6 +89,7 @@ You are the Reasoning Trajectory module (R_traj) in the CoEvolve framework, spec
 
 ### Context
 - Problem: {problem}
+- Problem Understanding: {problem_understanding}
 - Current Plan (Iteration {iteration}): {plan}
 - Prior Plan (Iteration {prev_iteration}): {previous_plan}
 - Test Results: {test_results}
@@ -102,7 +100,7 @@ You are the Reasoning Trajectory module (R_traj) in the CoEvolve framework, spec
 Create a reasoning prompt for plan revision. Follow these steps:
 1. Plan Error Localization
 2. Historical Plan Analysis
-3. Plan Adjustment Priorities
+3. Plan Adjustment Priorities, considering edge cases and special cases from the problem understanding
 4. Reasoning Prompt for Plan Update
 
 ### Instructions
@@ -116,13 +114,11 @@ Create a reasoning prompt for plan revision. Follow these steps:
         iteration: int,
         error_analysis: Dict,
         problem: str,
+        problem_understanding: str,
         plan: str,
         code: str,
         historical_logs: Optional[Dict] = None
     ) -> str:
-        """
-        Generates a structured prompt for refining code based on error analysis and iteration history.
-        """
         test_results = error_analysis.get('test_results', '')
         analysis = error_analysis.get('analysis', '')
         success_rate = error_analysis.get('success_rate', '0')
@@ -133,6 +129,7 @@ You are the Reasoning Trajectory module (R_traj), specializing in iterative code
 
 ### Context
 - Problem: {problem}
+- Problem Understanding: {problem_understanding}
 - Plan: {plan}
 - Initial Code: {code}
 - Test Results: {test_results}
@@ -140,7 +137,7 @@ You are the Reasoning Trajectory module (R_traj), specializing in iterative code
 - Success Rate: {success_rate}%
 
 ### Task
-Create the initial reasoning prompt for code revision in iteration 1. Focus on potential weaknesses, proven coding strategies, and priorities for robust code.
+Create the initial reasoning prompt for code revision in iteration 1. Focus on potential weaknesses, proven coding strategies, and priorities for robust code, considering edge cases and special cases from the problem understanding.
 
 ### Structured Output
 ## Predicted Code Vulnerabilities
@@ -170,6 +167,7 @@ You are the Reasoning Trajectory module (R_traj), specializing in iterative code
 
 ### Context
 - Problem: {problem}
+- Problem Understanding: {problem_understanding}
 - Plan: {plan}
 - Current Code (Iteration {iteration}): {code}
 - Prior Code (Iteration {prev_iteration}): {previous_code}
@@ -181,7 +179,7 @@ You are the Reasoning Trajectory module (R_traj), specializing in iterative code
 Create a reasoning prompt for code revision. Follow these steps:
 1. Code Error Localization
 2. Historical Code Analysis
-3. Code Adjustment Priorities
+3. Code Adjustment Priorities, considering edge cases and special cases from the problem understanding
 4. Reasoning Prompt for Code Update
 
 ### Instructions
@@ -214,10 +212,10 @@ class CoEvolvev2(BaseStrategy):
         **kwargs
     ):
         super().__init__(*args, **kwargs)
-        self.k = k # number of generated plan in initial planning phase
-        self.top_plan = 1 # number of top plans in k plans to be selected for code generation
-        self.t = t  # number of iterations for CoEvolve
-        self.number_of_code_per_plan = 3 # number of code to be generated for each plan in initial code generation phase
+        self.k = k
+        self.top_plan = 1
+        self.t = t
+        self.number_of_code_per_plan = 3
         self.trust_weights = {
             'plan': 0.4,
             'code': 0.3,
@@ -230,6 +228,7 @@ class CoEvolvev2(BaseStrategy):
         }
         self.history = []
         self.rt = ReasoningTrajectory(t=self.t)
+
     def xml_to_dict(self, element):
         result = {}
         for child in element:
@@ -348,8 +347,36 @@ class CoEvolvev2(BaseStrategy):
             return ''
 
     def get_sample_io_xcode(self, item):
-        return "\n".join([f"Input:\n{item['sample_inputs']}\nExpected output:\n{item['sample_outputs']}"
-])
+        return "\n".join([f"Input:\n{item['sample_inputs']}\nExpected output:\n{item['sample_outputs']}"])
+
+    def get_problem_understanding(self, item) -> str:
+        input_prompt = [
+            {
+                "role": "user",
+                "content": f"""You are an expert in competitive programming. Your task is to analyze a problem description and provide a concise understanding of the problem, including its requirements, constraints, objectives, and potential edge cases or special cases. Identify edge cases (e.g., boundary conditions, invalid inputs, or extreme scenarios) and special cases (e.g., unique input patterns or problem-specific conditions) that need attention, and provide examples of these cases beyond the provided sample I/O.
+
+    # Problem:
+    {self.data.get_prompt(item)}
+
+    # Sample I/O:
+    {self.get_sample_io_str(item)}
+
+    ----------------
+    Important: Respond in the following XML format. Keep the understanding concise, including a brief description of requirements, constraints, objectives, edge cases, special cases, and at least one example for each beyond the sample I/O.
+    ```xml
+    <root>
+    <understanding>Text describing the problem understanding, including requirements, constraints, objectives, edge cases, special cases, and examples</understanding>
+    </root>
+    ```"""
+            }
+        ]
+
+        response, pr_tok, com_tok = self.gpt_chat(processed_input=input_prompt)
+        response = self.replace_tag(response, 'understanding')
+        parsed = self.parse_xml(response)
+        understanding = parsed.get('understanding', 'No understanding provided')
+
+        return understanding, pr_tok, com_tok
 
     def generate_plans(self, item):
         plannings = []
@@ -357,16 +384,23 @@ class CoEvolvev2(BaseStrategy):
         com_tok = 0
         previous_approaches = ""
 
+        problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
+        pr_tok += pr_tok_u
+        com_tok += com_tok_u
+
         for t in range(1, self.k + 1):
             diff_prompt = "" if t == 1 else f", different from the following previous approaches: {previous_approaches}"
 
             input_recall = [
                 {
                     "role": "user",
-                    "content": f"""Given a problem, recall an approach that can solve it{diff_prompt}, provide a tutorial for the approach, then recall a relevant problem that uses this approach, and explain with plan and code.
+                    "content": f"""Given a problem and its understanding, recall an approach that can solve it{diff_prompt}, provide a tutorial for the approach, then recall a relevant problem that uses this approach, and explain with plan and code.
 
 # Problem:
 {self.data.get_prompt(item)}
+
+# Problem Understanding:
+{problem_understanding}
 
 # Approach:
 Recall one approach (e.g., Brute-force, Dynamic Programming, Divide-and-conquer, Greedy, Backtracking, Recursive, Binary search, and so on) that can solve the problem.
@@ -395,7 +429,7 @@ Your response must follow the following xml format-
 <planning>Planning to solve this problem using the approach.</planning>
 </problem>
 </root>
-""",
+"""
                 },
             ]
 
@@ -404,7 +438,6 @@ Your response must follow the following xml format-
             com_tok += com_tok_1
             item['api_calls'] = item.get('api_calls', 0) + 1
 
-            # Post processing
             response = self.trim_text(response, "The name of the approach")
             response = self.trim_text(response, "The tutorial for the approach")
             response = self.trim_text(response, "Describe the problem.")
@@ -417,8 +450,8 @@ Your response must follow the following xml format-
             response = self.replace_tag(response, 'planning')
             try:
                 parsed_response = self.parse_xml(response)
-            except ET.ParseError:
-                print(f"Error parsing XML when generating plans")
+            except ET.ParseError as e:
+                print(f"Error parsing XML when generating plans: {str(e)}")
                 continue
 
             approach_name = parsed_response['approach']['name']
@@ -436,7 +469,7 @@ Your response must follow the following xml format-
             input_for_problem_planning = [
                 {
                     "role": "user",
-                    "content": f"Given a competitive programming problem generate a concrete planning to solve the problem.\n# Problem:\n{example_problem}\n# Planning:\n{example_planning}\n{algorithm_prompt}\n## Problem to be solved:\n{self.data.get_prompt(item)}\n{sample_io_prompt}\n## Planning:\n\n----------------\nImportant: You should give only the planning to solve the problem. Do not add extra explanation or words."
+                    "content": f"Given a competitive programming problem and its understanding, generate a concrete planning to solve the problem.\n# Problem:\n{example_problem}\n# Planning:\n{example_planning}\n{algorithm_prompt}\n## Problem to be solved:\n{self.data.get_prompt(item)}\n## Problem Understanding:\n{problem_understanding}\n{sample_io_prompt}\n## Planning:\n\n----------------\nImportant: You should give only the planning to solve the problem. Do not add extra explanation or words."
                 }
             ]
 
@@ -473,6 +506,7 @@ Your response must follow the following xml format-
 
 ### Input:
 - Problem Description: {self.data.get_prompt(item)}
+- Problem Understanding: {problem_understanding}
 - Proposed Plan: {planning}
 - Sample I/O (if available): {sample_io_prompt}
 
@@ -480,7 +514,7 @@ Your response must follow the following xml format-
 - First, explain your reasoning for each criterion in concise, bullet-point form.
 - Then, assign floating-point scores (0.0-1.0) based on the criteria.
 - Finally, compute and output the overall solvability score as an integer (0-100).
-- Be objective, evidence-based, and critical—reference specific parts of the problem and plan.
+- Be objective, evidence-based, and critical—reference specific parts of the problem, understanding, and plan.
 
 ### Output Format:
 Respond ONLY in the following strict XML structure. Use CDATA for explanations to handle special characters. No additional text.
@@ -509,8 +543,8 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             verification_res = self.replace_tag(verification_res, 'overall_solvability')
             try:
                 verification_parsed = self.parse_xml(verification_res)
-            except ET.ParseError:
-                print(f"Error parsing XML response for verification of planning")
+            except ET.ParseError as e:
+                print(f"Error parsing XML response for verification of planning: {str(e)}")
                 continue
 
             confidence = int(float(verification_parsed['alignment_score']) * 
@@ -532,13 +566,17 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
         pr_tok = 0
         com_tok = 0
 
+        problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
+        pr_tok += pr_tok_u
+        com_tok += com_tok_u
+
         for i in range(self.number_of_code_per_plan):
             variation_prompt = "" #if i == 0 else "Generate a different code variation that still strictly follows the plan."
     
             input_for_code_generation = [
                 {
                     "role": "user",
-                    "content": f"Given a competitive programming problem generate {self.language} code to solve the problem.\n{algorithm_prompt}\n## Problem to be solved:\n{self.data.get_prompt(item)}\n## Planning:\n{plan}\n{sample_io_prompt}\n## Let's think step by step.\n{variation_prompt}\n\n----------------\nImportant:\n{std_input_prompt}\n## Your response must contain only the {self.language} code to solve this problem. Do not add extra explanation or words."
+                    "content": f"Given a competitive programming problem and its understanding, generate {self.language} code to solve the problem.\n{algorithm_prompt}\n## Problem to be solved:\n{self.data.get_prompt(item)}\n## Problem Understanding:\n{problem_understanding}\n## Planning:\n{plan}\n{sample_io_prompt}\n## Let's think step by step.\n{variation_prompt}\n\n----------------\nImportant:\n{std_input_prompt}\n## Your response must contain only the {self.language} code to solve this problem. Do not add extra explanation or words."
                 }
             ]
 
@@ -553,7 +591,7 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             codes.append(code)
 
         evaluated = []
-        for code in codes:
+        for idx, code in enumerate(codes):
             passed, test_log = self.data.evaluate_sample_io(item, code, self.language)
             num_passed = test_log.count("passed in test case")
             num_failed = test_log.count("failed in test case")
@@ -562,29 +600,32 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
                 passed_score = num_passed / total 
             else:
                 passed_score = 1.0 if passed else 0.0
-            evaluated.append((code, passed_score, test_log))
+            evaluated.append((code, passed_score, test_log, passed))
 
         evaluated.sort(key=lambda x: x[1], reverse=True)
         best_code = evaluated[0][0]
-        flag = evaluated[0][1] == 1.0
+        flag = evaluated[0][3]
         best_test_log = evaluated[0][2]
 
         return best_code, flag, best_test_log, evaluated[0][1], pr_tok, com_tok
-    def plan_analysis(self, plan: str, test_log: str, problem: str) -> dict:
-        """
-        Return insights on the plan's effectiveness based on the test log and problem description.
-        Returns {'insights': str, 'pr_tok': int, 'com_tok': int}
-        """
+
+    def plan_analysis(self, plan: str, code: str, test_log: str, problem: str, problem_understanding: str) -> dict:
         input_prompt = [
             {
                 "role": "user",
-                "content": f"""Analyze a plan for solving a competitive programming problem, given the problem description and test log from code generated using the plan. Take a sample input from the test log and simulate the plan's execution step-by-step to pinpoint where the plan is failing based on the test log, and suggest specific improvements or modifications to fix those issues.
+                "content": f"""Analyze a plan for solving a competitive programming problem, given the problem description, its understanding, and test log from code generated using the plan. Take a sample input from the test log and simulate the plan's execution step-by-step to pinpoint where the plan is failing based on the test log, and suggest specific improvements or modifications to fix those issues, considering edge cases and special cases from the problem understanding.
 
     # Problem:
     {problem}
 
+    # Problem Understanding:
+    {problem_understanding}
+
     # Plan:
     {plan}
+
+    # Current code implementation of the plan:
+    {code}
 
     # Test Log:
     {test_log}
@@ -619,18 +660,18 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             'pr_tok': pr_tok,
             'com_tok': com_tok
         }
-    def code_analysis(self, code: str, test_log: str, problem: str) -> dict:
-        """
-        Analyzes code issues using LLM based on test log, focusing on errors and suggestions.
-        Returns {'insights': str, 'pr_tok': int, 'com_tok': int}
-        """
+
+    def code_analysis(self, code: str, test_log: str, problem: str, problem_understanding: str) -> dict:
         input_prompt = [
             {
                 "role": "user",
-                "content": f"""Assess the generated code written in {self.language} programming language for a competitive programming problem, using the problem description and test log. Identify where the code is failing based on the test log, and suggest specific improvements or fixes to correct those issues.
+                "content": f"""Assess the generated code written in {self.language} programming language for a competitive programming problem, using the problem description, its understanding, and test log. Identify where the code is failing based on the test log, and suggest specific improvements or fixes to correct those issues, considering edge cases and special cases from the problem understanding.
 
     # Problem:
     {problem}
+
+    # Problem Understanding:
+    {problem_understanding}
 
     # Code:
     ```{self.language}
@@ -662,18 +703,18 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             'pr_tok': pr_tok,
             'com_tok': com_tok
         }
-    def content_analysis(self, problem: str, plan: str, code: str) -> dict:
-        """
-        Analyzes problem-solution alignment using LLM based on problem, plan, and code.
-        Returns {'problem_plan_confidence': float, 'plan_code_confidence': float, 'overall_confidence': float, 'problem_plan_insights': str, 'plan_code_insights': str, 'pr_tok': int, 'com_tok': int}
-        """
+
+    def content_analysis(self, problem: str, problem_understanding: str, plan: str, code: str) -> dict:
         input_prompt = [
             {
                 "role": "user",
-                "content": f"""Evaluate how effectively a plan and generated code, written in {self.language} programming language, align with the requirements of a competitive programming problem, given the problem description. Specifically, assess the alignment between the problem and the plan, and between the plan and the code. Identify any mismatches or issues in these alignments. Provide separate confidence scores (0.0 to 1.0) for the problem-plan alignment and plan-code alignment (1.0: perfect match; 0.0: no alignment), and suggest specific improvements for each if the alignment is not strong.
+                "content": f"""Evaluate how effectively a plan and generated code, written in {self.language} programming language, align with the requirements of a competitive programming problem, given the problem description and its understanding. Specifically, assess the alignment between the problem (and its understanding) and the plan, and between the plan and the code. Identify any mismatches or issues in these alignments, considering edge cases and special cases from the problem understanding. Provide separate confidence scores (0.0 to 1.0) for the problem-plan alignment and plan-code alignment (1.0: perfect match; 0.0: no alignment), and suggest specific improvements for each if the alignment is not strong.
 
     # Problem:
     {problem}
+
+    # Problem Understanding:
+    {problem_understanding}
 
     # Plan:
     {plan}
@@ -727,18 +768,14 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             'pr_tok': pr_tok,
             'com_tok': com_tok
         }
+
     def get_confidence(self, decision: str, analysis: dict, analysis_name: str) -> float:
-        """
-        Compute a confidence score (0.0–1.0) for a given decision based on a single analysis.
-        - If analysis_name is "plan" or "code": evaluates the reliability of that analysis.
-        - If analysis_name is "content": evaluates how well the plan and code align.
-        """
         meaning = self.analysis_meaning.get(analysis_name, "")
 
         prompt = [
             {
                 "role": "user",
-                "content": f"""You are given a {analysis_name} analysis. {meaning} Please calculate the confidence score (0.0 to 1.0) for choosing to {decision}, where 1.0 means the analysis strongly supports the decision (e.g., insights indicate it's the best fix), and 0.0 means it does not support at all.
+                "content": f"""You are given a {analysis_name} analysis. {meaning} Calculate the confidence score (0.0 to 1.0) for choosing to {decision}, where 1.0 means the analysis strongly supports the decision (e.g., insights indicate it's the best fix), and 0.0 means it does not support at all. Provide a brief explanation (50-100 words) of how the score was determined, referencing specific insights.
 
     Insights:
     {analysis.get('insights', '')}
@@ -747,18 +784,24 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
     Return only XML in this format:
     <root>
     <confidence>A float between 0.0 and 1.0</confidence>
+    <reasoning>Brief explanation of how the confidence score was determined</reasoning>
     </root>
     """
             }
         ]
+
         response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
-        # extract and parse the <confidence> tag
         response = self.replace_tag(response, 'confidence')
+        response = self.replace_tag(response, 'reasoning')
         parsed = self.parse_xml(response)
+
         try:
             score = float(parsed.get('confidence', 0.0))
+            reasoning = parsed.get('reasoning', 'No reasoning provided')
         except (TypeError, ValueError):
             score = 0.0
+            reasoning = "Error parsing LLM response"
+
         return max(0.0, min(score, 1.0))
 
     def get_consistency(
@@ -767,10 +810,6 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
         analysis1: dict, name1: str,
         analysis2: dict, name2: str
     ) -> float:
-        """
-        Compute a consistency score (0.0–1.0) for choosing `decision`
-        given two analyses: name1 and name2.
-        """
         ins1 = analysis1.get('insights', '').strip()
         ins2 = analysis2.get('insights', '').strip()
 
@@ -783,7 +822,7 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
                 "content": f"""You are given insights from two analyses: {name1} and {name2}. 
     {name1} meaning: {name1_meaning}
     {name2} meaning: {name2_meaning}
-    Calculate the consistency score (0.0 to 1.0) for choosing to {decision}, where 1.0 means the insights from both analyses are highly consistent and support the decision (e.g., similar issues and fixes suggested), and 0.0 means they are inconsistent or contradictory.
+    Calculate the consistency score (0.0 to 1.0) for choosing to {decision}, where 1.0 means the insights from both analyses are highly consistent and support the decision (e.g., similar issues and fixes suggested), and 0.0 means they are inconsistent or contradictory. Provide a brief explanation (50-100 words) of how the score was determined, referencing specific insights from both analyses.
 
     {name1} insights:
     {ins1}
@@ -795,6 +834,7 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
     Your response must follow the following XML format exactly:
     <root>
     <consistency>float between 0.0 and 1.0</consistency>
+    <reasoning>Brief explanation of how the consistency score was determined</reasoning>
     </root>
     """
             }
@@ -802,20 +842,23 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
 
         response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
         response = self.replace_tag(response, 'consistency')
+        response = self.replace_tag(response, 'reasoning')
         parsed = self.parse_xml(response)
+
         try:
             score = float(parsed.get('consistency', 0.0))
+            reasoning = parsed.get('reasoning', 'No reasoning provided')
         except (TypeError, ValueError):
             score = 0.0
+            reasoning = "Error parsing LLM response"
+
         return max(0.0, min(score, 1.0))
+
     def collaborative_decision(self, plan: str, code: str, outcomes: str, item) -> str:
-        """
-        Compute D_final = consensus over plan, code, and content analyses.
-        Returns either 'update plan' or 'update code only'.
-        """
-        A_plan = self.plan_analysis(plan, outcomes, self.data.get_prompt(item))
-        A_code = self.code_analysis(code, outcomes, self.data.get_prompt(item))
-        A_content = self.content_analysis(self.data.get_prompt(item), plan, code)
+        problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
+        A_plan = self.plan_analysis(plan, code, outcomes, self.data.get_prompt(item), problem_understanding)
+        A_code = self.code_analysis(code, outcomes, self.data.get_prompt(item), problem_understanding)
+        A_content = self.content_analysis(self.data.get_prompt(item), problem_understanding, plan, code)
 
         decisions = ['update plan', 'update code only']
         scores = {}
@@ -825,7 +868,6 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             for name, A_i in [('plan', A_plan), ('code', A_code), ('content', A_content)]:
                 w = self.trust_weights[name]
                 conf = self.get_confidence(d, A_i, name)
-                # consistency with other agents
                 cons_prod = 1.0
                 for oname, A_j in [('plan', A_plan), ('code', A_code), ('content', A_content)]:
                     if oname != name:
@@ -833,102 +875,109 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
                 total += w * conf * cons_prod
             scores[d] = total
 
-        # choose decision with max consensus score
-        return max(scores, key=scores.get)
+        final_decision = max(scores, key=scores.get)
+        return final_decision
+
     def debug_plan(
         self,
         iteration: int,
         plan: str,
         error_analysis: Dict,
-        problem: str
+        problem: str,
+        problem_understanding: str
     ):
         prev_logs = self.rt.historical_data.get(iteration - 1)
-        # 1. Generate reasoning trajectory
         rt_prompt = self.rt.generate_prompt_for_plan_update(
             iteration,
             error_analysis,
             problem,
+            problem_understanding,
             plan,
             historical_logs=prev_logs
         )
-        rt_response, _, _ = self.gpt_chat(
+
+        rt_response, pr_tok_rt, com_tok_rt = self.gpt_chat(
             processed_input=[{'role': 'user', 'content': rt_prompt}]
         )
         reasoning_trajectory = rt_response.strip()
 
-        # 2. Prompt to apply reasoning trajectory
         update_prompt = [{
             'role': 'user',
             'content': (
-                f"Given a competitive programming problem and a plan to solve it, but this plan has some troubles that need to be updated with insights. "
+                f"Given a competitive programming problem, its understanding, and a plan to solve it, but this plan has some troubles that need to be updated with insights. "
                 f"Please modify the plan accordingly.\n"
                 f"# Problem: {problem}\n"
+                f"# Problem Understanding: {problem_understanding}\n"
                 f"Current planning: {plan}\n"
                 f"Insights: {error_analysis['insights']}\n"
-                f"Reasoning Trajectory:\n{reasoning_trajectory}\n"
+                f"Reasoning Trajectory: {reasoning_trajectory}\n"
                 "Important: return only the revised plan text. "
                 "Important: You should give only the updated planning to solve the problem. "
                 "Do not add extra explanation or words."
             )
         }]
-        updated, p2, c2 = self.gpt_chat(processed_input=update_prompt)
+
+        updated, pr_tok_up, com_tok_up = self.gpt_chat(processed_input=update_prompt)
         revised_plan = updated.strip()
 
-        # Archive history
         self.rt.update_historical_data(iteration, {
             'previous_plan': plan,
             'previous_success_rate': error_analysis.get('success_rate'),
             'previous_iteration': iteration - 1
         })
         return revised_plan, reasoning_trajectory
+
     def debug_code(
         self,
         iteration: int,
         plan: str,
         code: str,
         error_analysis: Dict,
-        problem: str
+        problem: str,
+        problem_understanding: str
     ):
         prev_logs = self.rt.historical_data.get(iteration - 1)
-        # 1. Generate reasoning trajectory
         rt_prompt = self.rt.generate_prompt_for_code_update(
             iteration,
             error_analysis,
             problem,
+            problem_understanding,
             plan,
             code,
             historical_logs=prev_logs
         )
-        rt_response, _, _ = self.gpt_chat(
+
+        rt_response, pr_tok_rt, com_tok_rt = self.gpt_chat(
             processed_input=[{'role': 'user', 'content': rt_prompt}]
         )
         reasoning_trajectory = rt_response.strip()
 
-        # 2. Prompt to apply reasoning trajectory
         code_prompt = [{
             'role': 'user',
             'content': (
-                f"Given a competitive programming problem you have generated {self.language} code to solve the problem. "
-                f"But the generated code cannot pass sample test cases. Improve your code to solve the problem correctly.\n"
+                f"Given a competitive programming problem, its understanding, and generated {self.language} code to solve the problem, "
+                f"but the generated code cannot pass sample test cases. Improve your code to solve the problem correctly.\n"
                 f"# Problem: {problem}\n"
+                f"# Problem Understanding: {problem_understanding}\n"
                 f"## Planning: {plan}\n"
                 f"## Code:\n```{self.language}\n{code}\n```\n"
                 f"## Test Report:\n{error_analysis.get('test_results','')}\n"
                 f"Insights: {error_analysis['insights']}\n"
-                f"Reasoning Trajectory:\n{reasoning_trajectory}\n"
+                f"Reasoning Trajectory: {reasoning_trajectory}\n"
                 "Important: Respond only with the revised code. Do not add extra explanation or words."
             )
         }]
-        updated, p2, c2 = self.gpt_chat(processed_input=code_prompt)
+
+        updated, pr_tok_up, com_tok_up = self.gpt_chat(processed_input=code_prompt)
         revised_code = self.parse_code(updated)
 
-        # Archive history
         self.rt.update_historical_data(iteration, {
             'previous_code': code,
             'previous_success_rate': error_analysis.get('success_rate'),
             'previous_iteration': iteration - 1
         })
         return revised_code, reasoning_trajectory
+
     def _inner_run(self, item):
         pr_tok = 0
         com_tok = 0
@@ -937,14 +986,13 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
         pr_tok += pr_tok_p
         com_tok += com_tok_p
 
-        # Select top self.top_plan plans
         selected_plannings = plannings[:self.top_plan]
 
         best_code = ""
         flag = False
         test_log = ""
 
-        for planning_with_ex in selected_plannings:
+        for plan_idx, planning_with_ex in enumerate(selected_plannings, 1):
             plan, confidence, example = planning_with_ex
             approach_name = example.get('name', '') if 'name' in example else ''
             approach_tutorial = example.get('tutorial', '') if 'tutorial' in example else ''
@@ -955,7 +1003,7 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             else:
                 std_input_prompt = ""
 
-            best_code, flag, test_log, score, pr_tok_c, com_tok_c  = self.generate_codes_from_plan(item, plan, algorithm_prompt, sample_io_prompt)
+            best_code, flag, test_log, score, pr_tok_c, com_tok_c = self.generate_codes_from_plan(item, plan, algorithm_prompt, sample_io_prompt)
             pr_tok += pr_tok_c
             com_tok += com_tok_c
 
@@ -963,56 +1011,47 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
                 return best_code, pr_tok, com_tok
 
             for i in range(1, self.t + 1):
-                # Collaborative decision-making
+                problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
+                pr_tok += pr_tok_u
+                com_tok += com_tok_u
+
                 decision = self.collaborative_decision(plan, best_code, test_log, item)
-                print("Decision made: ", decision)
 
                 if decision == 'update plan':
-                    A_plan = self.plan_analysis(plan, test_log, self.data.get_prompt(item))
-                    prompt_update = [{"role": "user", "content": (
-                        f"Given a competitive programming problem and a plan to solve it, but this plan has some troubles that need to be updated with insights. Please modify the plan accordingly."
-                        f"# Problem: {self.data.get_prompt(item)}"
-                        f"Current planning: {plan}"
-                        f"Insights: {A_plan['insights']}"
-                        "Important: return only the revised plan text. Important: You should give only the updated planning to solve the problem. Do not add extra explanation or words."
-                    )}]
-                    plan, _ = self.debug_plan(i + 1, plan, {
+                    A_plan = self.plan_analysis(plan, best_code, test_log, self.data.get_prompt(item), problem_understanding)
+                    plan, reasoning_trajectory = self.debug_plan(i + 1, plan, {
                         'insights': A_plan['insights'],
                         'test_results': test_log,
                         'success_rate': score,
-                    }, self.data.get_prompt(item))
-                    code, flag, test_log, score, p_c2, c_c2 = self.generate_codes_from_plan(
-                        item, plan, algorithm_prompt, sample_io_prompt
-                    )
+                    }, self.data.get_prompt(item), problem_understanding)
 
-                    revised_plan, p_up, c_up = self.gpt_chat(processed_input=prompt_update)
-                    item['api_calls'] += 1
+                    code, flag, test_log, score, p_c2, c_c2 = self.generate_codes_from_plan(
+                        item, plan, algorithm_prompt="", sample_io_prompt=sample_io_prompt
+                    )
                     pr_tok += p_c2
                     com_tok += c_c2
                     best_code = code
                 else:
-                    A_code = self.code_analysis(best_code, test_log, self.data.get_prompt(item))
-                    best_code, _ = self.debug_code(i + 1, plan, best_code, {
+                    A_code = self.code_analysis(best_code, test_log, self.data.get_prompt(item), problem_understanding)
+                    best_code, reasoning_trajectory = self.debug_code(i + 1, plan, best_code, {
                         'insights': A_code['insights'],
                         'test_results': test_log,
                         'success_rate': score,
-                    }, self.data.get_prompt(item))
+                    }, self.data.get_prompt(item), problem_understanding)
 
-        
-
-                # Re-evaluate
                 flag, test_log = self.data.evaluate_sample_io(item, best_code, self.language)
 
                 if flag:
                     return best_code, pr_tok, com_tok
 
         return best_code, pr_tok, com_tok
+
     def run_single_pass(self, item: dict):
-        
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                return self._inner_run(item)
+                result = self._inner_run(item)
+                return result
             except ET.ParseError as e:
                 print(f"[run_single_pass] Attempt {attempt} caught ET.ParseError: {e}. Retrying...")
                 if attempt == max_retries:
