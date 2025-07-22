@@ -555,13 +555,13 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
         evaluated = []
         for code in codes:
             passed, test_log = self.data.evaluate_sample_io(item, code, self.language)
-            assert "passed in test case" in test_log or "failed in test case" in test_log, \
-                "Test log does not contain evaluation results. Check the evaluation function."
             num_passed = test_log.count("passed in test case")
             num_failed = test_log.count("failed in test case")
             total = num_passed + num_failed
-            assert total > 0, "No test cases were evaluated."
-            passed_score = num_passed / total
+            if total > 0:
+                passed_score = num_passed / total 
+            else:
+                passed_score = 1.0 if passed else 0.0
             evaluated.append((code, passed_score, test_log))
 
         evaluated.sort(key=lambda x: x[1], reverse=True)
