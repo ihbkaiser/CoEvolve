@@ -229,6 +229,7 @@ class CoEvolvev2(BaseStrategy):
             "content": "The content analysis identifies mismatches between the problem, plan, and code, and suggests improvements for better alignment.",
         }
         self.history = []
+        self.rt = ReasoningTrajectory(t=self.t)
     def xml_to_dict(self, element):
         result = {}
         for child in element:
@@ -414,8 +415,11 @@ Your response must follow the following xml format-
             response = self.replace_tag(response, 'description')
             response = self.replace_tag(response, 'code')
             response = self.replace_tag(response, 'planning')
-
-            parsed_response = self.parse_xml(response)
+            try:
+                parsed_response = self.parse_xml(response)
+            except ET.ParseError:
+                print(f"Error parsing XML when generating plans")
+                continue
 
             approach_name = parsed_response['approach']['name']
             approach_tutorial = parsed_response['approach']['tutorial']
@@ -503,8 +507,11 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             verification_res = self.replace_tag(verification_res, 'coherence_explanation')
             verification_res = self.replace_tag(verification_res, 'coherence_score')
             verification_res = self.replace_tag(verification_res, 'overall_solvability')
-
-            verification_parsed = self.parse_xml(verification_res)
+            try:
+                verification_parsed = self.parse_xml(verification_res)
+            except ET.ParseError:
+                print(f"Error parsing XML response for verification of planning")
+                continue
 
             confidence = int(float(verification_parsed['alignment_score']) * 
                              float(verification_parsed['coherence_score']) * 100)
