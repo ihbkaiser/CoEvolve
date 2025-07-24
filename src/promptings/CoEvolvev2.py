@@ -208,6 +208,7 @@ class CoEvolvev2(BaseStrategy):
         self,
         k: int = 3,
         t: int = 5,
+        max_xml_attempts: int = 3,
         *args,
         **kwargs
     ):
@@ -228,6 +229,7 @@ class CoEvolvev2(BaseStrategy):
         }
         self.history = []
         self.rt = ReasoningTrajectory(t=self.t)
+        self.max_xml_attempts = max_xml_attempts
 
     def xml_to_dict(self, element):
         result = {}
@@ -371,10 +373,22 @@ class CoEvolvev2(BaseStrategy):
             }
         ]
 
-        response, pr_tok, com_tok = self.gpt_chat(processed_input=input_prompt)
-        response = self.replace_tag(response, 'understanding')
-        parsed = self.parse_xml(response)
-        understanding = parsed.get('understanding', 'No understanding provided')
+        understanding = 'No understanding provided'
+        pr_tok = 0
+        com_tok = 0
+        for attempt in range(self.max_xml_attempts):
+            response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
+            pr_tok += pr_tok_temp
+            com_tok += com_tok_temp
+            response = self.replace_tag(response, 'understanding')
+            try:
+                parsed = self.parse_xml(response)
+                understanding = parsed.get('understanding', 'No understanding provided')
+                break
+            except ET.ParseError as e:
+                print(f"XML parse error in get_problem_understanding on attempt {attempt + 1}: {e}")
+                if attempt == self.max_xml_attempts - 1:
+                    print("Max attempts reached, using default understanding.")
 
         return understanding, pr_tok, com_tok
 
@@ -433,25 +447,36 @@ Your response must follow the following xml format-
                 },
             ]
 
-            response, pr_tok_1, com_tok_1 = self.gpt_chat(processed_input=input_recall)
+            parsed_response = None
+            pr_tok_1 = 0
+            com_tok_1 = 0
+            for attempt in range(self.max_xml_attempts):
+                response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_recall)
+                pr_tok_1 += pr_tok_temp
+                com_tok_1 += com_tok_temp
+                item['api_calls'] = item.get('api_calls', 0) + 1
+                response = self.trim_text(response, "The name of the approach")
+                response = self.trim_text(response, "The tutorial for the approach")
+                response = self.trim_text(response, "Describe the problem.")
+                response = self.trim_text(response, f"Let's think step by step to solve this problem in {self.language} programming language using the approach.")
+                response = self.trim_text(response, "Planning to solve this problem using the approach.")
+                response = self.replace_tag(response, 'name')
+                response = self.replace_tag(response, 'tutorial')
+                response = self.replace_tag(response, 'description')
+                response = self.replace_tag(response, 'code')
+                response = self.replace_tag(response, 'planning')
+                try:
+                    parsed_response = self.parse_xml(response)
+                    break
+                except ET.ParseError as e:
+                    print(f"XML parse error in generate_plans (recall) on attempt {attempt + 1}: {e}")
+                    if attempt == self.max_xml_attempts - 1:
+                        print("Max attempts reached, skipping this approach.")
+                        continue  # This continue is for the outer loop
+
             pr_tok += pr_tok_1
             com_tok += com_tok_1
-            item['api_calls'] = item.get('api_calls', 0) + 1
-
-            response = self.trim_text(response, "The name of the approach")
-            response = self.trim_text(response, "The tutorial for the approach")
-            response = self.trim_text(response, "Describe the problem.")
-            response = self.trim_text(response, f"Let's think step by step to solve this problem in {self.language} programming language using the approach.")
-            response = self.trim_text(response, "Planning to solve this problem using the approach.")
-            response = self.replace_tag(response, 'name')
-            response = self.replace_tag(response, 'tutorial')
-            response = self.replace_tag(response, 'description')
-            response = self.replace_tag(response, 'code')
-            response = self.replace_tag(response, 'planning')
-            try:
-                parsed_response = self.parse_xml(response)
-            except ET.ParseError as e:
-                print(f"Error parsing XML when generating plans: {str(e)}")
+            if parsed_response is None:
                 continue
 
             approach_name = parsed_response['approach']['name']
@@ -529,22 +554,33 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
                 }
             ]
 
-            verification_res, pr_tok_1, com_tok_1 = self.gpt_chat(
-                processed_input=input_for_planning_verification
-            )
+            verification_parsed = None
+            pr_tok_1 = 0
+            com_tok_1 = 0
+            for attempt in range(self.max_xml_attempts):
+                verification_res, pr_tok_temp, com_tok_temp = self.gpt_chat(
+                    processed_input=input_for_planning_verification
+                )
+                pr_tok_1 += pr_tok_temp
+                com_tok_1 += com_tok_temp
+                item['api_calls'] += 1
+                verification_res = self.replace_tag(verification_res, 'alignment_explanation')
+                verification_res = self.replace_tag(verification_res, 'alignment_score')
+                verification_res = self.replace_tag(verification_res, 'coherence_explanation')
+                verification_res = self.replace_tag(verification_res, 'coherence_score')
+                verification_res = self.replace_tag(verification_res, 'overall_solvability')
+                try:
+                    verification_parsed = self.parse_xml(verification_res)
+                    break
+                except ET.ParseError as e:
+                    print(f"XML parse error in generate_plans (verification) on attempt {attempt + 1}: {e}")
+                    if attempt == self.max_xml_attempts - 1:
+                        print("Max attempts reached, skipping this plan.")
+                        continue  # Outer continue
+
             pr_tok += pr_tok_1
             com_tok += com_tok_1
-            item['api_calls'] += 1
-
-            verification_res = self.replace_tag(verification_res, 'alignment_explanation')
-            verification_res = self.replace_tag(verification_res, 'alignment_score')
-            verification_res = self.replace_tag(verification_res, 'coherence_explanation')
-            verification_res = self.replace_tag(verification_res, 'coherence_score')
-            verification_res = self.replace_tag(verification_res, 'overall_solvability')
-            try:
-                verification_parsed = self.parse_xml(verification_res)
-            except ET.ParseError as e:
-                print(f"Error parsing XML response for verification of planning: {str(e)}")
+            if verification_parsed is None:
                 continue
 
             confidence = int(float(verification_parsed['alignment_score']) * 
@@ -642,17 +678,25 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             }
         ]
 
-        response, pr_tok, com_tok = self.gpt_chat(processed_input=input_prompt)
-        response = self.replace_tag(response, 'simulation')
-        response = self.replace_tag(response, 'insights')
-        parsed = self.parse_xml(response)
-
-        try:
-            simulation = parsed.get('simulation', 'No simulation provided')
-            insights = parsed.get('insights', 'No insights provided')
-        except (ValueError, TypeError):
-            simulation = "Error parsing LLM response"
-            insights = "Error parsing LLM response"
+        simulation = 'No simulation provided'
+        insights = 'No insights provided'
+        pr_tok = 0
+        com_tok = 0
+        for attempt in range(self.max_xml_attempts):
+            response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
+            pr_tok += pr_tok_temp
+            com_tok += com_tok_temp
+            response = self.replace_tag(response, 'simulation')
+            response = self.replace_tag(response, 'insights')
+            try:
+                parsed = self.parse_xml(response)
+                simulation = parsed.get('simulation', 'No simulation provided')
+                insights = parsed.get('insights', 'No insights provided')
+                break
+            except ET.ParseError as e:
+                print(f"XML parse error in plan_analysis on attempt {attempt + 1}: {e}")
+                if attempt == self.max_xml_attempts - 1:
+                    print("Max attempts reached, using defaults.")
 
         return {
             'simulation': simulation,
@@ -692,11 +736,22 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             }
         ]
 
-        response, pr_tok, com_tok = self.gpt_chat(processed_input=input_prompt)
-        response = self.replace_tag(response, 'insights')
-        parsed = self.parse_xml(response)
-
-        insights = parsed.get('insights', 'No insights provided')
+        insights = 'No insights provided'
+        pr_tok = 0
+        com_tok = 0
+        for attempt in range(self.max_xml_attempts):
+            response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
+            pr_tok += pr_tok_temp
+            com_tok += com_tok_temp
+            response = self.replace_tag(response, 'insights')
+            try:
+                parsed = self.parse_xml(response)
+                insights = parsed.get('insights', 'No insights provided')
+                break
+            except ET.ParseError as e:
+                print(f"XML parse error in code_analysis on attempt {attempt + 1}: {e}")
+                if attempt == self.max_xml_attempts - 1:
+                    print("Max attempts reached, using default.")
 
         return {
             'insights': insights,
@@ -738,25 +793,41 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             }
         ]
 
-        response, pr_tok, com_tok = self.gpt_chat(processed_input=input_prompt)
-        response = self.replace_tag(response, 'problem_plan_confidence')
-        response = self.replace_tag(response, 'plan_code_confidence')
-        response = self.replace_tag(response, 'problem_plan_insights')
-        response = self.replace_tag(response, 'plan_code_insights')
-        parsed = self.parse_xml(response)
+        problem_plan_confidence = 0.0
+        plan_code_confidence = 0.0
+        overall_confidence = 0.0
+        problem_plan_insights = 'No insights provided'
+        plan_code_insights = 'No insights provided'
+        pr_tok = 0
+        com_tok = 0
+        for attempt in range(self.max_xml_attempts):
+            response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
+            pr_tok += pr_tok_temp
+            com_tok += com_tok_temp
+            response = self.replace_tag(response, 'problem_plan_confidence')
+            response = self.replace_tag(response, 'plan_code_confidence')
+            response = self.replace_tag(response, 'problem_plan_insights')
+            response = self.replace_tag(response, 'plan_code_insights')
+            try:
+                parsed = self.parse_xml(response)
+                problem_plan_confidence = float(parsed.get('problem_plan_confidence', 0.0))
+                plan_code_confidence = float(parsed.get('plan_code_confidence', 0.0))
+                overall_confidence = problem_plan_confidence * plan_code_confidence
+                problem_plan_insights = parsed.get('problem_plan_insights', 'No insights provided')
+                plan_code_insights = parsed.get('plan_code_insights', 'No insights provided')
+                break
+            except ET.ParseError as e:
+                print(f"XML parse error in content_analysis on attempt {attempt + 1}: {e}")
+                if attempt == self.max_xml_attempts - 1:
+                    print("Max attempts reached, using defaults.")
+            except (ValueError, TypeError):
+                if attempt == self.max_xml_attempts - 1:
+                    problem_plan_confidence = 0.0
+                    plan_code_confidence = 0.0
+                    overall_confidence = 0.0
+                    problem_plan_insights = "Error parsing LLM response"
+                    plan_code_insights = "Error parsing LLM response"
 
-        try:
-            problem_plan_confidence = float(parsed.get('problem_plan_confidence', 0.0))
-            plan_code_confidence = float(parsed.get('plan_code_confidence', 0.0))
-            overall_confidence = problem_plan_confidence * plan_code_confidence
-            problem_plan_insights = parsed.get('problem_plan_insights', 'No insights provided')
-            plan_code_insights = parsed.get('plan_code_insights', 'No insights provided')
-        except (ValueError, TypeError):
-            problem_plan_confidence = 0.0
-            plan_code_confidence = 0.0
-            overall_confidence = 0.0
-            problem_plan_insights = "Error parsing LLM response"
-            plan_code_insights = "Error parsing LLM response"
         insights = f"## Problem-Plan Alignment Analysis: {problem_plan_insights}\n## Plan-Code Alignment Analysis: {plan_code_insights}"
         return {
             'problem_plan_confidence': max(0.0, min(problem_plan_confidence, 1.0)),
@@ -790,17 +861,24 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             }
         ]
 
-        response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
-        response = self.replace_tag(response, 'confidence')
-        response = self.replace_tag(response, 'reasoning')
-        parsed = self.parse_xml(response)
-
-        try:
-            score = float(parsed.get('confidence', 0.0))
-            reasoning = parsed.get('reasoning', 'No reasoning provided')
-        except (TypeError, ValueError):
-            score = 0.0
-            reasoning = "Error parsing LLM response"
+        score = 0.0
+        for attempt in range(self.max_xml_attempts):
+            response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
+            response = self.replace_tag(response, 'confidence')
+            response = self.replace_tag(response, 'reasoning')
+            try:
+                parsed = self.parse_xml(response)
+                score = float(parsed.get('confidence', 0.0))
+                reasoning = parsed.get('reasoning', 'No reasoning provided')
+                break
+            except ET.ParseError as e:
+                print(f"XML parse error in get_confidence on attempt {attempt + 1}: {e}")
+                if attempt == self.max_xml_attempts - 1:
+                    print("Max attempts reached, using default score 0.0.")
+            except (TypeError, ValueError):
+                if attempt == self.max_xml_attempts - 1:
+                    score = 0.0
+                    reasoning = "Error parsing LLM response"
 
         return max(0.0, min(score, 1.0))
 
@@ -840,17 +918,24 @@ Respond ONLY in the following strict XML structure. Use CDATA for explanations t
             }
         ]
 
-        response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
-        response = self.replace_tag(response, 'consistency')
-        response = self.replace_tag(response, 'reasoning')
-        parsed = self.parse_xml(response)
-
-        try:
-            score = float(parsed.get('consistency', 0.0))
-            reasoning = parsed.get('reasoning', 'No reasoning provided')
-        except (TypeError, ValueError):
-            score = 0.0
-            reasoning = "Error parsing LLM response"
+        score = 0.0
+        for attempt in range(self.max_xml_attempts):
+            response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
+            response = self.replace_tag(response, 'consistency')
+            response = self.replace_tag(response, 'reasoning')
+            try:
+                parsed = self.parse_xml(response)
+                score = float(parsed.get('consistency', 0.0))
+                reasoning = parsed.get('reasoning', 'No reasoning provided')
+                break
+            except ET.ParseError as e:
+                print(f"XML parse error in get_consistency on attempt {attempt + 1}: {e}")
+                if attempt == self.max_xml_attempts - 1:
+                    print("Max attempts reached, using default score 0.0.")
+            except (TypeError, ValueError):
+                if attempt == self.max_xml_attempts - 1:
+                    score = 0.0
+                    reasoning = "Error parsing LLM response"
 
         return max(0.0, min(score, 1.0))
 

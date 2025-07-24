@@ -12,7 +12,7 @@ dotenv.load_dotenv()
 class Gemini(BaseModel):
     def __init__(self, temperature=0):
         genai.configure(api_key=os.getenv("Google_API_KEY"))
-        self.model = genai.GenerativeModel('gemini-2.0-flash')
+        self.model = genai.GenerativeModel('gemini-2.5-flash')
 
     # @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
     def prompt(self, processed_input):
