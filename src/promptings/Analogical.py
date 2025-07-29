@@ -3,7 +3,7 @@ import tiktoken
 import os
 import re
 from copy import deepcopy
-
+# https://sso2.viettel.vn/forgotpassword?service=http%3A%2F%2F10.255.58.98%3A9002%2FoauthVsa%2Fhome&locale=vi
 from .Base import BaseStrategy
 from models.Base import BaseModel
 from datasets.Dataset import Dataset
