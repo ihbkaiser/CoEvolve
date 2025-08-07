@@ -1,241 +1,81 @@
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
+
 import tiktoken
 import os
 import json
 import re
 import sys
 import time
+import random
 from datetime import datetime
 from copy import deepcopy
 
 from .Base import BaseStrategy
 from models.Base import BaseModel
-
 from datasets.Dataset import Dataset
 from datasets.APPSDataset import APPSDataset
 from datasets.MBPPDataset import MBPPDataset
 from datasets.XCodeDataset import XCodeDataset
 from datasets.HumanEvalDataset import HumanDataset
 from datasets.CodeContestDataset import CodeContestDataset
-
 from results.Results import Results
 from evaluations.func_evaluate import evaluate_io
 import numpy as np
-from typing import Optional, Dict
+from forms import *
+class AnalysisReflection:
+    def __init__(self):
+        self.historical_data = {}  # Dictionary to store iteration data
 
-class ReasoningTrajectory:
-    def __init__(self, t: int):
-        self.t = t  
-        self.historical_data: Dict[int, Dict] = {}  
+    def update_historical_data(self, iteration: int, data: Dict):
+        """Store data for the given iteration."""
+        self.historical_data[iteration] = data
 
-    def generate_prompt_for_plan_update(
-        self,
-        iteration: int,
-        error_analysis: Dict,
-        problem: str,
-        problem_understanding: str,
-        plan: str,
-        code: Optional[str] = None,
-        historical_logs: Optional[Dict] = None
-    ) -> str:
-        def sanitize(text: Optional[str]) -> str:
-            if not isinstance(text, str):
-                text = str(text)
-            return text.replace('%', '%%')
+    def generate_prompt_for_plan_reflection(self, iteration: int, error_analysis: Dict, problem: str, problem_understanding: str, plan: str, historical_logs: Dict) -> str:
+        """Generate a conversational prompt for plan debugging, evolving from R(t-1)."""
+        previous_reflection = historical_logs.get('analysis_reflection', 'No previous analysis reflection available')
+        insights = error_analysis.get('insights', '')
+        success_rate = error_analysis.get('success_rate', 0.0)
+        
+        # Base prompt structure
+        prompt = f"""You are a debugging assistant for a competitive programming problem. Your task is to provide a conversational analysis reflection to guide plan refinement at iteration {iteration}. The reflection should evolve from the previous reflection (R(t-1)) and incorporate new insights from plan analysis.
 
-        test_results = sanitize(error_analysis.get('test_results', ''))
-        analysis = sanitize(error_analysis.get('analysis', ''))
-        success_rate = sanitize(str(error_analysis.get('success_rate', '0')))
-        problem = sanitize(problem)
-        problem_understanding = sanitize(problem_understanding)
-        plan = sanitize(plan)
-
-        if iteration == 1:
-            prompt = f"""
-You are the Reasoning Trajectory module (R_traj) in the CoEvolve framework, specializing in iterative plan refinement for competitive programming.
-
-## Context
 Problem: {problem}
 Problem Understanding: {problem_understanding}
-Initial Plan: {plan}
-Test Results: {test_results}
-Error Analysis: {analysis}
-Success Rate: {success_rate}%
+Current Plan: {plan}
+Test Log: {error_analysis.get('test_results', '')}
+Insights from Plan Analysis: {insights}
+Previous Analysis Reflection (R(t-1)): {previous_reflection}
+Success Rate: {success_rate:.2f}%
 
-## Task
-Create the initial reasoning prompt for plan revision in iteration 1. With no historical data, focus on:
-1. Anticipating potential weaknesses in the plan based on the problem's details and understanding.
-2. Drawing on planning strategies and common pitfalls, considering edge cases and special cases.
-3. Setting forward-looking priorities for a thorough plan.
-
-## Instructions
-Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-## Predicted Plan Vulnerabilities
-[Your vulnerabilities]
-
-## Domain Expertise Synthesis
-[Your synthesis]
-
-## Strategic Prioritization
-[Your prioritization]
-
-## Reasoning Prompt
-[Your prompt]
-"""
-        else:
-            prev = historical_logs or {}
-            prev_iteration = prev.get('previous_iteration', iteration - 1)
-            prev_success_rate = sanitize(str(prev.get('previous_success_rate', '0')))
-            previous_plan = sanitize(prev.get('previous_plan', ''))
-
-            prompt = f"""
-You are the Reasoning Trajectory module (R_traj) in the CoEvolve framework, specializing in iterative plan refinement.
-
-## Context
-Problem: {problem}
-Problem Understanding: {problem_understanding}
-Current Plan (Iteration {iteration}): {plan}
-Prior Plan (Iteration {prev_iteration}): {previous_plan}
-Test Results: {test_results}
-Error Analysis: {analysis}
-Success Rate: {success_rate}%
-
-## Task
-Create a reasoning prompt for plan revision. Follow these steps:
-1. Plan Error Localization
-2. Historical Plan Analysis
-3. Plan Adjustment Priorities, considering edge cases and special cases from the problem understanding
-4. Reasoning Prompt for Plan Update
-
-## Instructions
-Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-## Plan Error Localization
-[Your localization]
-
-## Historical Plan Analysis
-[Your analysis]
-
-## Plan Adjustment Priorities
-[Your priorities]
-
-## Reasoning Prompt
-[Your prompt]
+Evolve the reflection from R(t-1) by addressing the new insights. Provide a reflection to guide the next plan update.
 """
         return prompt
 
-    def generate_prompt_for_code_update(
-        self,
-        iteration: int,
-        error_analysis: Dict,
-        problem: str,
-        problem_understanding: str,
-        plan: str,
-        code: str,
-        historical_logs: Optional[Dict] = None
-    ) -> str:
-        def sanitize(text: Optional[str]) -> str:
-            if not isinstance(text, str):
-                text = str(text)
-            return text.replace('%', '%%')
+    def generate_prompt_for_code_reflection(self, iteration: int, error_analysis: Dict, problem: str, problem_understanding: str, plan: str, code: str, historical_logs: Dict) -> str:
+        """Generate a conversational prompt for code debugging, evolving from R(t-1)."""
+        previous_reflection = historical_logs.get('analysis_reflection', 'No previous analysis reflection available')
+        insights = error_analysis.get('insights', '')
+        success_rate = error_analysis.get('success_rate', 0.0)
+        
+        # Base prompt structure
+        prompt = f"""You are a debugging assistant for a competitive programming problem. Your task is to provide a conversational analysis reflection to guide code refinement at iteration {iteration}. The reflection should evolve from the previous reflection (R(t-1)) and incorporate new insights from code analysis.
 
-        test_results = sanitize(error_analysis.get('test_results', ''))
-        analysis = sanitize(error_analysis.get('analysis', ''))
-        success_rate = sanitize(str(error_analysis.get('success_rate', '0')))
-        problem = sanitize(problem)
-        problem_understanding = sanitize(problem_understanding)
-        plan = sanitize(plan)
-        code = sanitize(code)
-
-        if iteration == 1:
-            prompt = f"""
-You are the Reasoning Trajectory module (R_traj), specializing in iterative code refinement.
-
-## Context
 Problem: {problem}
 Problem Understanding: {problem_understanding}
-Plan: {plan}
-Initial Code: {code}
-Test Results: {test_results}
-Error Analysis: {analysis}
-Success Rate: {success_rate}%
+Current Plan: {plan}
+Code:
+```python
+{code}
+```
+Test Log: {error_analysis.get('test_results', '')}
+Insights from Code Analysis: {insights}
+Previous Analysis Reflection (R(t-1)): {previous_reflection}
+Success Rate: {success_rate:.2f}%
 
-## Task
-Create the initial reasoning prompt for code revision in iteration 1. Focus on potential weaknesses, proven coding strategies, and priorities for robust code, considering edge cases and special cases from the problem understanding.
-
-## Instructions
-Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-## Predicted Code Vulnerabilities
-[Your vulnerabilities]
-
-## Domain Expertise Synthesis
-[Your synthesis]
-
-## Strategic Prioritization
-[Your prioritization]
-
-## Reasoning Prompt
-[Your prompt]
-"""
-        else:
-            prev = historical_logs or {}
-            prev_iteration = prev.get('previous_iteration', iteration - 1)
-            prev_success_rate = sanitize(str(prev.get('previous_success_rate', '0')))
-            previous_code = sanitize(prev.get('previous_code', ''))
-
-            prompt = f"""
-You are the Reasoning Trajectory module (R_traj), specializing in iterative code refinement.
-
-## Context
-Problem: {problem}
-Problem Understanding: {problem_understanding}
-Plan: {plan}
-Current Code (Iteration {iteration}): {code}
-Prior Code (Iteration {prev_iteration}): {previous_code}
-Test Results: {test_results}
-Error Analysis: {analysis}
-Success Rate: {success_rate}%
-
-## Task
-Create a reasoning prompt for code revision. Follow these steps:
-1. Code Error Localization
-2. Historical Code Analysis
-3. Code Adjustment Priorities, considering edge cases and special cases from the problem understanding
-4. Reasoning Prompt for Code Update
-
-## Instructions
-Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-## Code Error Localization
-[Your localization]
-
-## Historical Code Analysis
-[Your analysis]
-
-## Code Adjustment Priorities
-[Your priorities]
-
-## Reasoning Prompt
-[Your prompt]
+Evolve the reflection from R(t-1) by addressing the new insights. Provide a reflection to guide the next code update.
 """
         return prompt
 
-    def update_historical_data(self, iteration: int, historical_logs: Dict):
-        self.historical_data[iteration] = historical_logs
-
-mapping = {
-    1: "one (01)",
-    2: "two (02)",
-    3: "three (03)",
-    4: "four (04)",
-    5: "five (05)",
-    6: "six (06)",
-    7: "seven (07)",
-    8: "eight (08)",
-    9: "nine (09)",
-}
 
 class CoEvolvev2(BaseStrategy):
     def __init__(
@@ -243,7 +83,6 @@ class CoEvolvev2(BaseStrategy):
         k: int = 3,
         t: int = 5,
         max_attempts: int = 3,
-        include_mode: str = 'understanding_only',
         *args,
         **kwargs
     ):
@@ -258,2457 +97,904 @@ class CoEvolvev2(BaseStrategy):
             'content': 0.3
         }
         self.analysis_meaning = {
-            "plan": "The plan analysis identifies failures in the planning approach based on test logs and suggests specific modifications to the plan.",
-            "code": "The code analysis identifies errors in the code implementation based on test logs and suggests specific fixes to the code.",
-            "content": "The content analysis identifies mismatches between the problem, plan, and code, and suggests improvements for better alignment.",
+            "plan": "Identifies errors or problems in the planning approach.",
+            "code": "Identifies errors or problems in the code implementation.",
+            "content": "Identifies mismatches between problem, plan, and code."
         }
         self.history = []
-        self.rt = ReasoningTrajectory(t=self.t)
         self.max_attempts = max_attempts
-        if include_mode not in ['both', 'problem_only', 'understanding_only']:
-            raise ValueError("include_mode must be 'both', 'problem_only', or 'understanding_only'")
-        self.include_mode = include_mode
+        self.verbose = True
+        self.rt = AnalysisReflection()  # Initialize AnalysisReflection for debugging guidance
 
-    def parse_structured_text(self, response: str) -> dict:
+    def _extract_json_string(self, text: str) -> Optional[str]:
+        m = re.search(r'```json\s*({[\s\S]*?})\s*```', text, re.DOTALL)
+        if not m:
+            m = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', text, re.DOTALL)
+        if not m:
+            m = re.search(r'({[\s\S]*})', text, re.DOTALL)
+        return m.group(1) if m else None
+
+    def _fix_invalid_escapes(self, json_str: str) -> str:
+        json_str = json_str.replace('\b', '\\b').replace('\f', '\\f').replace('\r', '\\r').replace('\t', '\\t')
+        json_str = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', json_str)
+        return json_str
+
+    def parse_structured_output(self, response: str, model: BaseModel) -> BaseModel:
+        if self.verbose:
+            print("Step: Parsing structured output")
+            print(f"Input response: {response}...")
         response = response.strip()
-        sections = {}
-        current_key = None
-        current_value = []
-        
-        for line in response.splitlines():
-            if line.startswith('## '):
-                if current_key:
-                    sections[current_key] = '\n'.join(current_value).strip()
-                current_key = line[3:].strip().lower().replace(' ', '_')
-                current_value = []
-            elif current_key:
-                current_value.append(line)
-        
-        if current_key:
-            sections[current_key] = '\n'.join(current_value).strip()
-        
-        if 'code' in sections:
-            sections['code'] = self.parse_code(sections['code'])
-        
-        return sections
-
-    def parse_code(self, response: str) -> str:
-        if "```" not in response:
-            return response
-
-        code_pattern = r'```((.|\n)*?)```'
-        if "```Python" in response:
-            code_pattern = r'```Python((.|\n)*?)```'
-        if "```Python3" in response:
-            code_pattern = r'```Python3((.|\n)*?)```'
-        if "```python" in response:
-            code_pattern = r'```python((.|\n)*?)```'
-        if "```python3" in response:
-            code_pattern = r'```python3((.|\n)*?)```'
-        if "```C" in response:
-            code_pattern = r'```C((.|\n)*?)```'
-        if "```c" in response:
-            code_pattern = r'```c((.|\n)*?)```'
-        if "```C++" in response:
-            code_pattern = r'```C\+\+((.|\n)*?)```'
-        if "```c++" in response:
-            code_pattern = r'```c\+\+((.|\n)*?)```'
-        if "```Java" in response:
-            code_pattern = r'```Java((.|\n)*?)```'
-        if "```java" in response:
-            code_pattern = r'```java((.|\n)*?)```'
-        if "```Node" in response:
-            code_pattern = r'```Node((.|\n)*?)```'
-        if "```node" in response:
-            code_pattern = r'```node((.|\n)*?)```'
-        if "```Rust" in response:
-            code_pattern = r'```Rust((.|\n)*?)```'
-        if "```rust" in response:
-            code_pattern = r'```rust((.|\n)*?)```'
-        if "```PHP" in response:
-            code_pattern = r'```PHP((.|\n)*?)```'
-        if "```php" in response:
-            code_pattern = r'```php((.|\n)*?)```'
-        if "```Go" in response:
-            code_pattern = r'```Go((.|\n)*?)```'
-        if "```go" in response:
-            code_pattern = r'```go((.|\n)*?)```'
-        if "```Ruby" in response:
-            code_pattern = r'```Ruby((.|\n)*?)```'
-        if "```ruby" in response:
-            code_pattern = r'```ruby((.|\n)*?)```'
-        if "```C#" in response:
-            code_pattern = r'```C#((.|\n)*?)```'
-        if "```c#" in response:
-            code_pattern = r'```c#((.|\n)*?)```'
-        if "```csharp" in response:
-            code_pattern = r'```csharp((.|\n)*?)```'
-
-        code_blocks = re.findall(code_pattern, response, re.DOTALL)
-
-        if isinstance(code_blocks[-1], (tuple, list)):
-            code_str = "\n".join(code_blocks[-1])
-        elif isinstance(code_blocks[-1], str):
-            code_str = code_blocks[-1]
-        else:
-            code_str = response
-
-        return code_str.strip()
-
-    @staticmethod
-    def trim_text(text: str, trimmed_text: str):
-        return text.replace(trimmed_text, '').strip()
-
-    def sanitize_input(self, text: Optional[str]) -> str:
-        if not isinstance(text, str):
-            text = str(text)
-        return text.replace('%', '%%')
-
-    def get_sample_io_str(self, item) -> str:
-        if isinstance(self.data, XCodeDataset):
-            return self.get_sample_io_xcode(item)
-        else:
-            sample_io = item['sample_io']
-            if len(sample_io) > 0:
-                if isinstance(sample_io[0], str):
-                    return "\n".join(self.sanitize_input(io) for io in sample_io)
-                if isinstance(sample_io[0], dict):
-                    return "\n".join([f"Input:\n{self.sanitize_input(io['input'])}\nExpected output:\n{self.sanitize_input(io['output'][0])}" for io in sample_io])
-            return ''
-
-    def get_sample_io_xcode(self, item):
-        return "\n".join([f"Input:\n{self.sanitize_input(item['sample_inputs'])}\nExpected output:\n{self.sanitize_input(item['sample_outputs'])}"])
-
-    def get_problem_understanding(self, item) -> str:
-        input_prompt = [
+        schema = model.model_json_schema()
+        wrapping_prompt = [
             {
                 "role": "user",
-                "content": f"""You are an expert in competitive programming. Your task is to analyze a problem description and provide a concise understanding of the problem, including its requirements, constraints, objectives, and potential edge cases or special cases. Identify edge cases (e.g., boundary conditions, invalid inputs, or extreme scenarios) and special cases (e.g., unique input patterns or problem-specific conditions) that need attention, and provide examples of these cases beyond the provided sample I/O.
-
-    # Problem:
-    {self.sanitize_input(self.data.get_prompt(item))}
-
-    # Sample I/O:
-    {self.get_sample_io_str(item)}
-
-    ----------------
-    IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-    ## Understanding
-    [Your understanding]
+                "content": f"""You are an expert in JSON structuring. Your task is to take a free-form response and convert it into structured JSON matching the provided schema. Extract relevant information from the response and ensure the output is valid JSON.
+Free-form response:
+{response}
+Target JSON schema:
+{json.dumps(schema, indent=2)}
+Instructions:
+1. Analyze the response to identify content matching the schema fields.
+2. If the response contains markdown (e.g., ```json ... ```), extract the relevant content.
+3. If fields are missing, provide sensible defaults or leave them empty (e.g., "" for strings).
+4. Output ONLY valid JSON matching the schema, with no extra text or markdown.
+Example output:
+{{
+  "json": {{ ... }}
+}}
 """
             }
         ]
+        try:
+            if self.verbose:
+                print("Step: Making API call to wrap free-form response into JSON")
+            wrapped_response, pr_tok, com_tok = self.gpt_chat(wrapping_prompt)
+            if self.verbose:
+                print(f"Step: Wrapped response: {wrapped_response[:200]}...")
+        except Exception as e:
+            print(f"Error wrapping response: {e}\nRaw response: {response[:200]}...")
+            return model()
+        json_str = self._extract_json_string(wrapped_response)
+        if not json_str:
+            print(f"Invalid output: No JSON structure found in wrapped response\nWrapped response: {wrapped_response[:200]}...\nRaw response: {response[:200]}...")
+            return model()
+        json_str = json_str.strip()
+        json_str = re.sub(r'```+\s*$', '', json_str)
+        data = None
+        for attempt in range(3):
+            try:
+                data = json.loads(json_str)
+                break
+            except json.JSONDecodeError as e:
+                if attempt == 2:
+                    print(f"Invalid output: JSON decode error after retries: {e}\nFinal JSON candidate: {json_str[:300]}...\nWrapped response: {wrapped_response[:300]}...\nRaw response: {response[:300]}...")
+                    return model()
+                if self.verbose:
+                    print(f"Step: JSON decode failed (attempt {attempt + 1}), applying escape fix: {e}")
+                json_str = self._fix_invalid_escapes(json_str)
+            except Exception as e:
+                print(f"Unexpected error during JSON loading: {e}")
+                return model()
+        if data is None:
+            return model()
+        try:
+            parsed = model(**data)
+            if self.verbose:
+                print("Step: Parsing successful")
+                print(f"Parsed data: {parsed}")
+            return parsed
+        except Exception as e:
+            print(f"Invalid output: Model instantiation error: {e}\nParsed data dict: {data}")
+            return model()
 
-        understanding = 'No understanding provided'
+    def parse_code(self, response: str) -> str:
+        if self.verbose:
+            print("Step: Parsing code")
+            print(f"Input response: {response[:100]}...")
+        if "```" not in response:
+            return response
+        code_pattern = r'```((.|\n)*?)```'
+        languages = ['Python', 'python', 'Python3', 'python3', 'C', 'c', 'C++', 'c++', 'Java', 'java', 'Node', 'node', 'Rust', 'rust', 'PHP', 'php', 'Go', 'go', 'Ruby', 'ruby', 'C#', 'c#', 'csharp']
+        for lang in languages:
+            if f"```{lang}" in response:
+                code_pattern = r'```' + lang + r'((.|\n)*?)```'
+                break
+        code_blocks = re.findall(code_pattern, response, re.DOTALL)
+        if code_blocks:
+            code_str = code_blocks[-1][0] if isinstance(code_blocks[-1], tuple) else code_blocks[-1]
+        else:
+            code_str = response
+        parsed_code = code_str.strip()
+        if self.verbose:
+            print("Step: Code parsing successful")
+            print(f"Parsed code: {parsed_code[:100]}...")
+        return parsed_code
+
+    def get_sample_io_str(self, item) -> str:
+        if self.verbose:
+            print("Step: Getting sample I/O string")
+        if isinstance(self.data, XCodeDataset):
+            sample_io = f"Input:\n{item['sample_inputs']}\nExpected output:\n{item['sample_outputs']}"
+        else:
+            sample_io_list = item.get('sample_io', [])
+            if sample_io_list:
+                if isinstance(sample_io_list[0], str):
+                    sample_io = "\n".join(io for io in sample_io_list)
+                elif isinstance(sample_io_list[0], dict):
+                    sample_io = "\n".join([f"Input:\n{io['input']}\nExpected output:\n{io['output'][0]}" for io in sample_io_list])
+            else:
+                sample_io = ''
+        if self.verbose:
+            print("Step: Sample I/O retrieved")
+            print(f"Sample I/O: {sample_io}...")
+        return sample_io
+
+    def compute_score(self, test_log: str) -> float:
+        if self.verbose:
+            print("Step: Computing score")
+            print(f"Test log: {test_log}...")
+        num_passed = test_log.count("passed in test case")
+        num_failed = test_log.count("failed in test case")
+        total = num_passed + num_failed
+        score = num_passed / total if total > 0 else 0.0
+        if self.verbose:
+            print("Step: Score computed")
+            print(f"Score: {score} (passed: {num_passed}, failed: {num_failed})")
+        return score
+
+    def get_problem_understanding(self, item) -> Tuple[str, int, int]:
+        if self.verbose:
+            print("Step: Generating problem understanding")
+        problem_text = self.data.get_prompt(item)
+        input_for_understanding = [
+            {
+                "role": "user",
+                "content": f"""You are an expert in competitive programming. Your task is to analyze a problem description and provide a concise understanding of the problem, including its requirements, constraints, objectives, and potential edge cases or special cases. Identify edge cases (e.g., boundary conditions, invalid inputs, or extreme scenarios) and special cases (e.g., unique input patterns or problem-specific conditions) that need attention, and provide examples of these cases beyond the provided sample I/O.
+# Problem:
+{problem_text}
+# Sample I/O:
+{self.get_sample_io_str(item)}
+"""
+            }
+        ]
+        try:
+            if self.verbose:
+                print("Step: Making API call for understanding")
+            understanding, pr_tok, com_tok = self.gpt_chat(processed_input=input_for_understanding)
+            item['api_calls'] += 1
+            if self.verbose:
+                print("Step: Understanding parsed")
+                print(f"Understanding: {understanding}...")
+            return understanding, pr_tok, com_tok
+        except Exception as e:
+            print(f"Error in get_problem_understanding: {e}")
+            return "", 0, 0
+
+    def generate_code_from_plan(self, item, planning: str, problem_text: str, sample_io_prompt: str, previous_codes: str = "", understanding: str = "") -> Tuple[str, float, str, int, int]:
+        if self.verbose:
+            print("Step: Generating code from plan")
+            print(f"Plan: {planning}...")
+        codes = []
         pr_tok = 0
         com_tok = 0
-        for attempt in range(self.max_attempts):
+        std_input_prompt = "## Note: Strictly follow the input and output format. The input should be taken from Standard input and output should be given to standard output. If you are writing a function then after the function definition take input using `input()` function then call the function with specified parameters and finally print the output of the function. Do not add extra print statement otherwise it will failed the test cases." if isinstance(self.data, (APPSDataset, CodeContestDataset, XCodeDataset)) else ""
+        context = f"Problem: {problem_text}\n"
+        context += understanding if understanding else ""
+        for c_idx in range(1, self.number_of_code_per_plan + 1):
+            if self.verbose:
+                print(f"Step: Generating code variant {c_idx}")
+            diversity_prompt = "" if c_idx == 1 else f"""
+Generate a distinct implementation from previous ones: {previous_codes}. Use a unique approach, such as alternative data structures (e.g., list vs. dictionary, array vs. set in {self.language}), varied coding patterns (e.g., functional vs. imperative style).
+Ensure the implementation strictly follows the provided plan and solves the problem correctly.
+"""
+            input_for_code_generation = [
+                {
+                    "role": "user",
+                    "content": f"""# Task:
+Generate a {self.language} code solution for the given competitive programming problem, strictly adhering to the provided plan and input/output specifications.
+# Problem Context:
+{context}
+# Planning:
+{planning}
+# Sample Test Cases:
+{sample_io_prompt}
+{diversity_prompt}
+# Constraints:
+{std_input_prompt}
+- Handle all edge cases (e.g., empty inputs, large inputs, boundary values) as specified in the problem and test cases.
+- Optimize for correctness and clarity, ensuring alignment with the plan.
+# Instructions:
+1. Follow the plan step-by-step to create a correct and efficient solution.
+2. Provide the code in a clear, readable format, optionally within ```{self.language} ... ``` markdown.
+IMPORTANT: Your response must contain only the {self.language} code to solve this problem. Do not add extra explanation or words.
+"""
+                }
+            ]
             try:
-                response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
-                pr_tok += pr_tok_temp
-                com_tok += com_tok_temp
-                parsed = self.parse_structured_text(response)
-                understanding = parsed.get('understanding', 'No understanding provided')
-                break
+                if self.verbose:
+                    print("Step: Making API call for code generation")
+                code_response, pr_tok_1, com_tok_1 = self.gpt_chat(processed_input=input_for_code_generation)
+                pr_tok += pr_tok_1
+                com_tok += com_tok_1
+                item['api_calls'] += 1
+                code = self.parse_code(code_response)
+                if self.verbose:
+                    print(f"Generated code variant {c_idx}: {code}")
+                codes.append(code)
+                previous_codes += f"\n- {code}"
             except Exception as e:
-                print(f"Error in get_problem_understanding on attempt {attempt + 1}: {e}")
-                if attempt == self.max_attempts - 1:
-                    print("Max attempts reached, using default understanding.")
+                print(f"Error generating code {c_idx}: {e}")
+                codes.append("")
+        if self.verbose:
+            print(f"Step: {len(codes)} code variants generated. Starting evaluation")
+        evaluated_codes = []
+        for code_idx, code in enumerate(codes, 1):
+            if self.verbose:
+                print(f"Step: Evaluating code variant {code_idx}")
+                print(f"Code: {code[:100]}...")
+            if not code:
+                evaluated_codes.append((code, 0.0, ""))
+                continue
+            try:
+                passed, test_log = self.data.evaluate_sample_io(item, code, self.language)
+                score = self.compute_score(test_log)
+                evaluated_codes.append((code, score, test_log))
+                if self.verbose:
+                    print("Step: Evaluation completed")
+                    print(f"Score: {score}, Passed: {passed}")
+            except Exception as e:
+                print(f"Error evaluating code: {e}")
+                evaluated_codes.append((code, 0.0, f"Evaluation failed: {e}"))
+        max_score = max([score for _, score, _ in evaluated_codes], default=0.0)
+        top_codes = [(code, test_log) for code, score, test_log in evaluated_codes if score == max_score]
+        best_code, best_test_log = random.choice(top_codes) if top_codes else ("", "")
+        if self.verbose:
+            print("Step: Best code selected")
+            print(f"Best code: {best_code[:100]}..., Score: {max_score}")
+        return best_code, max_score, best_test_log, pr_tok, com_tok
 
-        return understanding, pr_tok, com_tok
-
-    def generate_plans(self, item):
-        plannings = []
+    def generate_plans(self, item) -> Tuple[List[PlanOutput], int, int]:
+        if self.verbose:
+            print("Step: Starting plan generation")
+        plans = []
         pr_tok = 0
         com_tok = 0
         previous_approaches = ""
-
-        problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
-        pr_tok += pr_tok_u
-        com_tok += com_tok_u
-
-        problem_text = self.sanitize_input(self.data.get_prompt(item))
-        context = ""
-        if self.include_mode == 'both':
-            context = f"# Problem:\n{problem_text}\n# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-        elif self.include_mode == 'problem_only':
-            context = f"# Problem:\n{problem_text}"
-        elif self.include_mode == 'understanding_only':
-            context = f"# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
-        for t in range(1, self.k + 1):
+        problem_text = self.data.get_prompt(item)
+        sample_io_prompt = self.get_sample_io_str(item)
+        problem_understanding, pr_u, com_u = self.get_problem_understanding(item)
+        pr_tok += pr_u
+        com_tok += com_u
+        max_plans = self.k
+        for t in range(1, max_plans + 1):
+            if self.verbose:
+                print(f"Step: Generating plan variant {t}")
             diff_prompt = "" if t == 1 else f", different from the following previous approaches: {previous_approaches}"
-
             input_recall = [
-                {
-                    "role": "user",
-                    "content": f"""Given a problem and its understanding, recall an approach that can solve it{diff_prompt}, provide a tutorial for the approach, then recall a relevant problem that uses this approach, and explain with plan and code.
-
-{context}
-
+                {"role": "user", "content": f"""Given a problem and its understanding, recall an approach that can solve it{diff_prompt}, provide a tutorial for the approach, then recall a relevant problem that uses this approach, and explain with plan and code.
+Problem: {problem_text}
+Problem understanding: {problem_understanding}
 # Approach:
 Recall one approach (e.g., Brute-force, Dynamic Programming, Divide-and-conquer, Greedy, Backtracking, Recursive, Binary search, and so on) that can solve the problem.
-
 # Tutorial:
 Write a useful tutorial about the approach. Provide a high level generic tutorial for solving this type of problem. Do not generate code.
-
 # Exemplar:
 Recall one relevant and distinct problem (different from the problem mentioned above) that uses this approach. For the problem,
 1. describe it
 2. generate {self.language} code step by step to solve that problem using the approach
-3. finally generate a planning to solve that problem using the approach
-
-----------------
-IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-## Approach Name
-[Your approach name]
-
-## Tutorial
-[Your tutorial text]
-
-## Problem Description
-[Your problem description]
-
-## Code
-``` {self.language}
-[Your code here]
-```
-
-## Planning
-[Your planning text]
+3. generate a planning to solve that problem using the approach
+Provide the response in a clear, readable format, optionally using markdown for sections.
 """
-                },
+                }
             ]
-
             parsed_response = None
-            pr_tok_1 = 0
-            com_tok_1 = 0
             for attempt in range(self.max_attempts):
+                if self.verbose:
+                    print(f"Step: Approach recall attempt {attempt + 1} for variant {t}")
                 try:
-                    response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_recall)
-                    pr_tok_1 += pr_tok_temp
-                    com_tok_1 += com_tok_temp
-                    item['api_calls'] = item.get('api_calls', 0) + 1
-                    parsed_response = self.parse_structured_text(response)
+                    response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_recall)
+                    pr_tok += pr_tok_temp
+                    com_tok += com_tok_temp
+                    item['api_calls'] += 1
+                    parsed_response = self.parse_structured_output(response, ApproachRecall)
+                    if self.verbose:
+                        print("Step: Approach recall successful")
+                        print(f"Approach name: {parsed_response.approach_name}")
                     break
                 except Exception as e:
-                    print(f"Error in generate_plans (recall) on attempt {attempt + 1}: {e}")
+                    print(f"Error in recall attempt {attempt + 1}: {e}")
                     if attempt == self.max_attempts - 1:
-                        print("Max attempts reached, skipping this approach.")
-
-            pr_tok += pr_tok_1
-            com_tok += com_tok_1
+                        continue
             if parsed_response is None:
                 continue
-
-            approach_name = parsed_response.get('approach_name', '')
-            approach_tutorial = parsed_response.get('tutorial', '')
-            algorithm_prompt = f"## Relevant Approach: {self.sanitize_input(approach_name)}\n{self.sanitize_input(approach_tutorial)}"
-            example_description = parsed_response.get('problem_description', '')
-            example_planning = parsed_response.get('planning', '')
-            example_code = parsed_response.get('code', '')
-
-            previous_approaches += f"\n- {self.sanitize_input(approach_name)}"
-
-            sample_io_prompt = f"## Sample Test cases: \n{self.get_sample_io_str(item)}\n"
-
+            approach_name = parsed_response.approach_name
+            approach_tutorial = parsed_response.tutorial
+            algorithm_prompt = f"## Relevant Approach: {approach_name}\n{approach_tutorial}"
+            example_description = parsed_response.problem_description
+            example_planning = parsed_response.planning
+            previous_approaches += f"\n- {approach_name}"
             input_for_problem_planning = [
                 {
                     "role": "user",
-                    "content": f"""Given a competitive programming problem and its understanding, generate a concrete planning to solve the problem.
-
-# Problem:
-{example_description}
-
-# Planning:
-{example_planning}
-
-{algorithm_prompt}
-
-## Problem to be solved:
-{problem_text}
-
-## Problem Understanding:
-{self.sanitize_input(problem_understanding) if self.include_mode in ['both', 'understanding_only'] else ''}
-
-{sample_io_prompt}
-
-## Planning:
-[Your planning]
-"""
-                }
+                    "content": (
+                        "You are an expert competitive-programming coach. "
+                        "Your task is to produce a precise, step-by-step plan to solve the Target Problem "
+                        "using the specified algorithmic approach. "
+                        "You are provided with a worked example. It is directly analogous to the Target Problem section below"
+                        "Provide the plan in a clear, readable format, optionally using markdown."
+                        f"# Example Problem Description:\n{example_description}\n\n"
+                        f"# Approach Template:\n{algorithm_prompt}\n\n"
+                        f"# Example Plan (for reference):\n{example_planning}\n\n"
+                        f"# Target Problem:\n{problem_text}\n\n"
+                        f"## Sample Test Cases:\n{sample_io_prompt}"
+                    ),
+                },
             ]
-
-            try:
-                planning, pr_tok_1, com_tok_1 = self.gpt_chat(
-                    processed_input=input_for_problem_planning
-                )
-                pr_tok += pr_tok_1
-                com_tok += com_tok_1
-                item['api_calls'] += 1
-            except Exception as e:
-                print(f"Error in generate_plans (planning) for approach {t}: {e}")
-                continue
-
-            input_for_planning_verification = [
-                {
-                    "role": "user",
-                    "content": f"""You are an expert evaluator for competitive programming plans. Assess a given plan based on problem-plan alignment and plan coherence. Provide explanations and scores, then compute an overall solvability score.
-
-## Evaluation Criteria:
-1. **Problem-Plan Alignment** (Score: 0.0 to 1.0):
-   - Measures how well the plan addresses the problem's requirements, constraints, objectives, input/output formats, and edge cases.
-   - 1.0: Perfect match—fully covers all aspects, including time/space complexity and pitfalls.
-   - 0.5: Partial match—addresses core elements but misses some constraints or edge cases.
-   - 0.0: No match—irrelevant or misunderstands the problem.
-
-2. **Plan Coherence** (Score: 0.0 to 1.0):
-   - Measures logical consistency, feasibility, and completeness of the plan.
-   - 1.0: Fully coherent—logically sound, clear, feasible in {self.language}, no gaps.
-   - 0.5: Moderately coherent—logical flow but minor inconsistencies or gaps.
-   - 0.0: Incoherent—illogical, infeasible, or riddled with errors.
-
-3. **Overall Solvability Score**:
-   - Compute as (alignment score) * (coherence score) * 100, rounded to the nearest integer (0-100).
-
-## Input:
-Problem Description: {problem_text}
-Problem Understanding: {self.sanitize_input(problem_understanding) if self.include_mode in ['both', 'understanding_only'] else ''}
-Proposed Plan: {self.sanitize_input(planning)}
-Sample I/O: {sample_io_prompt}
-
-## Instructions:
-Output in this exact structured text format with headings. Do not use JSON or extra text. Be objective and critical.
-
-## Alignment Explanation
-[Your explanation]
-
-## Alignment Score
-[Score as float]
-
-## Coherence Explanation
-[Your explanation]
-
-## Coherence Score
-[Score as float]
-
-## Overall Solvability
-[Integer score]
-"""
-                }
-            ]
-
-            verification_parsed = None
-            pr_tok_1 = 0
-            com_tok_1 = 0
             for attempt in range(self.max_attempts):
+                if self.verbose:
+                    print(f"Step: Planning generation attempt {attempt + 1} for variant {t}")
                 try:
-                    verification_res, pr_tok_temp, com_tok_temp = self.gpt_chat(
-                        processed_input=input_for_planning_verification
-                    )
-                    pr_tok_1 += pr_tok_temp
-                    com_tok_1 += com_tok_temp
+                    planning, pr_tok_temp, com_tok_temp = self.gpt_chat(input_for_problem_planning)
+                    pr_tok += pr_tok_temp
+                    com_tok += com_tok_temp
                     item['api_calls'] += 1
-                    verification_parsed = self.parse_structured_text(verification_res)
                     break
                 except Exception as e:
-                    print(f"Error in generate_plans (verification) on attempt {attempt + 1}: {e}")
+                    print(f"Error in planning attempt {attempt + 1}: {e}")
                     if attempt == self.max_attempts - 1:
-                        print("Max attempts reached, skipping this plan.")
-
-            pr_tok += pr_tok_1
-            com_tok += com_tok_1
-            if verification_parsed is None:
-                continue
-
-            try:
-                alignment_score = float(verification_parsed.get('alignment_score', 0.0))
-                coherence_score = float(verification_parsed.get('coherence_score', 0.0))
-                confidence = int(alignment_score * coherence_score * 100)
-            except (ValueError, TypeError) as e:
-                print(f"Error calculating confidence in generate_plans: {e}")
-                confidence = 0
-
-            plannings.append((planning, confidence, {
-                'description': example_description,
-                'code': example_code,
-                'planning': example_planning
-            }))
-
-        plannings.sort(key=lambda x: x[1], reverse=True)
-
-        return plannings, pr_tok, com_tok
-
-    def generate_codes_from_plan(self, item, plan, algorithm_prompt, sample_io_prompt):
-        if isinstance(self.data, (APPSDataset, CodeContestDataset, XCodeDataset)):
-            std_input_prompt = "## Note: Strictly follow the input and output format. The input should be taken from Standard input and output should be given to standard output. If you are writing a function then after the function definition take input using `input()` function then call the function with specified parameters and finally print the output of the function. Do not add extra print statement otherwise it will failed the test cases."
-        else:
-            std_input_prompt = ""
-
-        codes = []
-        pr_tok = 0
-        com_tok = 0
-
-        problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
-        pr_tok += pr_tok_u
-        com_tok += com_tok_u
-
-        problem_text = self.sanitize_input(self.data.get_prompt(item))
-        context = ""
-        if self.include_mode == 'both':
-            context = f"## Problem to be solved:\n{problem_text}\n## Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-        elif self.include_mode == 'problem_only':
-            context = f"## Problem to be solved:\n{problem_text}"
-        elif self.include_mode == 'understanding_only':
-            context = f"## Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
-        for i in range(self.number_of_code_per_plan):
-            variation_prompt = "" #if i == 0 else "Generate a different code variation that still strictly follows the plan."
-
-            input_for_code_generation = [
-                {
-                    "role": "user",
-                    "content": f"""Given a competitive programming problem and its understanding, generate {self.language} code to solve the problem.
-
-{self.sanitize_input(algorithm_prompt)}
-{context}
-## Planning:
-{self.sanitize_input(plan)}
-{sample_io_prompt}
-## Let's think step by step.
-{variation_prompt}
-
-----------------
-Important:
-{std_input_prompt}
-## Instructions:
-Output only the {self.language} code to solve this problem. Do not add extra explanation or words.
+                        continue
+            input_for_planning_verification = [
+                {"role": "user", "content": f"""You are an expert evaluator for competitive programming plans.
+                 Assess the plan for alignment with the problem and overall solvability (0-100). Provide explanations and scores.
+Problem Description: {problem_text}
+Proposed Plan: {planning}
+Sample I/O: {sample_io_prompt}
+Provide the response in a clear, readable format, optionally using markdown.
 """
                 }
             ]
-
-            try:
-                code_response, pr_tok_1, com_tok_1 = self.gpt_chat(
-                    processed_input=input_for_code_generation
-                )
-                item['api_calls'] += 1
-                pr_tok += pr_tok_1
-                com_tok += com_tok_1
-                code = self.parse_code(code_response)
-                codes.append(code)
-            except Exception as e:
-                print(f"Error in generate_codes_from_plan for code {i+1}: {e}")
-                codes.append("")
+            verification_parsed = None
+            for attempt in range(self.max_attempts):
+                if self.verbose:
+                    print(f"Step: Planning verification attempt {attempt + 1} for variant {t}")
+                try:
+                    verification_res, pr_tok_temp, com_tok_temp = self.gpt_chat(input_for_planning_verification)
+                    pr_tok += pr_tok_temp
+                    com_tok += com_tok_temp
+                    item['api_calls'] += 1
+                    verification_parsed = self.parse_structured_output(verification_res, VerificationOutput)
+                    if self.verbose:
+                        print("Step: Verification successful")
+                        print(f"Overall solvability: {verification_parsed.overall_solvability}")
+                    break
+                except Exception as e:
+                    print(f"Error in verification attempt {attempt + 1}: {e}")
+                    if attempt == self.max_attempts - 1:
+                        continue
+            if verification_parsed is None:
                 continue
+            llm_score = verification_parsed.overall_solvability
+            plans.append((planning, llm_score))
+            if self.verbose:
+                print(f"Step: Plan variant {t} completed")
+                print(f"LLM score: {llm_score}")
+        if len(plans) < self.k:
+            print(f"Warning: Only {len(plans)}/{self.k} valid plans generated, attempting one more generation")
+            additional_plans, pr_tok_add, com_tok_add = self.generate_plans(item)
+            pr_tok += pr_tok_add
+            com_tok += com_tok_add
+            plans.extend(additional_plans)
+        # Sort plans by llm_score and select the top one
+        plans.sort(key=lambda x: x[1], reverse=True)
+        if not plans:
+            print("Warning: No valid plans generated. Returning empty result.")
+            return [], pr_tok, com_tok
+        best_plan, best_llm_score = plans[0]
+        # Generate codes for the best plan only
+        if self.verbose:
+            print(f"Step: Generating codes for best plan with LLM score: {best_llm_score}")
+        best_code, code_score, test_log, pr_tok_code, com_tok_code = self.generate_code_from_plan(
+            item, best_plan, problem_text, sample_io_prompt, "", problem_understanding
+        )
+        pr_tok += pr_tok_code
+        com_tok += com_tok_code
+        # Return a single PlanOutput for the best plan
+        result = [PlanOutput(
+            planning=best_plan,
+            llm_score=best_llm_score,
+            code=best_code,
+            code_score=code_score,
+            test_log=test_log
+        )]
+        if self.verbose:
+            print("Step: Best plan and code selected")
+            print(f"Best plan LLM score: {best_llm_score}, Best code score: {code_score}")
+        return result, pr_tok, com_tok
 
-        evaluated = []
-        for idx, code in enumerate(codes):
-            if not code:
-                evaluated.append((code, 0.0, "No code generated", False))
-                continue
-            try:
-                passed, test_log = self.data.evaluate_sample_io(item, code, self.language)
-                num_passed = test_log.count("passed in test case")
-                num_failed = test_log.count("failed in test case")
-                total = num_passed + num_failed
-                if total > 0:
-                    passed_score = num_passed / total 
-                else:
-                    passed_score = 1.0 if passed else 0.0
-                evaluated.append((code, passed_score, test_log, passed))
-            except Exception as e:
-                print(f"Error evaluating code {idx+1} in generate_codes_from_plan: {e}")
-                evaluated.append((code, 0.0, f"Evaluation failed: {e}", False))
-
-        evaluated.sort(key=lambda x: x[1], reverse=True)
-        best_code = evaluated[0][0] if evaluated else ""
-        flag = evaluated[0][3] if evaluated else False
-        best_test_log = evaluated[0][2] if evaluated else ""
-
-        return best_code, flag, best_test_log, evaluated[0][1] if evaluated else 0.0, pr_tok, com_tok
-
-    def plan_analysis(self, plan: str, code: str, test_log: str, problem: str, problem_understanding: str) -> dict:
-        context = ""
-        if self.include_mode == 'both':
-            context = f"# Problem:\n{self.sanitize_input(problem)}\n# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-        elif self.include_mode == 'problem_only':
-            context = f"# Problem:\n{self.sanitize_input(problem)}"
-        elif self.include_mode == 'understanding_only':
-            context = f"# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
+    def plan_analysis(self, plan: str, code: str, test_log: str, problem: str, problem_understanding: str) -> PlanAnalysisOutput:
+        if self.verbose:
+            print("Step: Performing plan analysis")
+            print(f"Plan: {plan[:100]}...")
+        schema = PlanAnalysisOutput.model_json_schema()
         input_prompt = [
             {
                 "role": "user",
-                "content": f"""Analyze a plan for solving a competitive programming problem, given the problem description, its understanding, and test log from code generated using the plan. Take a sample input from the test log and simulate the plan's execution step-by-step to pinpoint where the plan is failing based on the test log, and suggest specific improvements or modifications to fix those issues, considering edge cases and special cases from the problem understanding.
-
-{context}
-
-# Plan:
-{self.sanitize_input(plan)}
-
-# Current code implementation of the plan:
-{self.sanitize_input(code)}
-
-# Test Log:
-{self.sanitize_input(test_log)}
-
-----------------
-IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-## Simulation
-[Your simulation]
-
-## Insights
-[Your insights]
-"""
-            }
+                "content": (
+                    "You are an expert competitive-programming plan analyst. "
+                    "Given only a proposed solution plan and a test log showing failures, "
+                    "simulate the plan step-by-step on the failing test case(s) to identify and localize any "
+                    "logical flaws, incorrect assumptions, or mismatches within the plan itself. "
+                    "Provide a detailed analysis in a clear, readable format, optionally using markdown."
+                    f"Problem Description:\n{problem}\n\n"
+                    f"Problem Understanding:\n{problem_understanding}\n\n"
+                    f"Proposed Plan:\n{plan}\n\n"
+                    f"Test Log (failing input/output):\n{test_log}"
+                ),
+            },
         ]
-
-        simulation = 'No simulation provided'
-        insights = 'No insights provided'
         pr_tok = 0
         com_tok = 0
         for attempt in range(self.max_attempts):
+            if self.verbose:
+                print(f"Step: Plan analysis attempt {attempt + 1}")
             try:
-                response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
+                response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_prompt)
                 pr_tok += pr_tok_temp
                 com_tok += com_tok_temp
-                parsed = self.parse_structured_text(response)
-                simulation = parsed.get('simulation', 'No simulation provided')
-                insights = parsed.get('insights', 'No insights provided')
-                break
+                parsed = self.parse_structured_output(response, PlanAnalysisOutput)
+                parsed.pr_tok = pr_tok
+                parsed.com_tok = com_tok
+                if self.verbose:
+                    print("Step: Plan analysis successful")
+                    print(f"Insights: {parsed.insights[:100]}...")
+                return parsed
             except Exception as e:
-                print(f"Error in plan_analysis on attempt {attempt + 1}: {e}")
+                print(f"Error in plan_analysis attempt {attempt + 1}: {e}")
                 if attempt == self.max_attempts - 1:
-                    print("Max attempts reached, using defaults.")
+                    return PlanAnalysisOutput(pr_tok=pr_tok, com_tok=com_tok)
 
-        return {
-            'simulation': simulation,
-            'insights': insights,
-            'pr_tok': pr_tok,
-            'com_tok': com_tok
-        }
-
-    def code_analysis(self, code: str, test_log: str, problem: str, problem_understanding: str) -> dict:
-        context = ""
-        if self.include_mode == 'both':
-            context = f"# Problem:\n{self.sanitize_input(problem)}\n# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-        elif self.include_mode == 'problem_only':
-            context = f"# Problem:\n{self.sanitize_input(problem)}"
-        elif self.include_mode == 'understanding_only':
-            context = f"# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
+    def code_analysis(self, code: str, test_log: str, problem: str, problem_understanding: str) -> CodeAnalysisOutput:
+        if self.verbose:
+            print("Step: Performing code analysis")
+            print(f"Code: {code[:100]}...")
+        schema = CodeAnalysisOutput.model_json_schema()
         input_prompt = [
             {
                 "role": "user",
-                "content": f"""Assess the generated code written in {self.language} programming language for a competitive programming problem, using the problem description, its understanding, and test log. Identify where the code is failing based on the test log, and suggest specific improvements or fixes to correct those issues, considering edge cases and special cases from the problem understanding.
-
-{context}
-
-# Code:
-```{self.language}
-{self.sanitize_input(code)}
-```
-
-# Test Log:
-{self.sanitize_input(test_log)}
-
-----------------
-IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep insights concise (<150 words).
-
-## Insights
-[Your insights]
-"""
-            }
+                "content": (
+                    "You are an expert competitive-programming code analyst. "
+                    "Your task is to simulate the provided implementation on a failing test case, "
+                    "executing it line-by-line to pinpoint and localize any specific errors, mismatches, "
+                    "or logical flaws in the code. "
+                    "Provide a detailed analysis in a clear, readable format, optionally using markdown."
+                    f"Problem Description:\n{problem}\n\n"
+                    f"Problem Understanding:\n{problem_understanding}\n\n"
+                    f"Code Implementation ({self.language}):\n"
+                    f"```{self.language}\n{code}\n```\n\n"
+                    f"Test Log (failing input/output):\n{test_log}"
+                ),
+            },
         ]
-
-        insights = 'No insights provided'
         pr_tok = 0
         com_tok = 0
         for attempt in range(self.max_attempts):
+            if self.verbose:
+                print(f"Step: Code analysis attempt {attempt + 1}")
             try:
-                response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
+                response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_prompt)
                 pr_tok += pr_tok_temp
                 com_tok += com_tok_temp
-                parsed = self.parse_structured_text(response)
-                insights = parsed.get('insights', 'No insights provided')
-                break
+                parsed = self.parse_structured_output(response, CodeAnalysisOutput)
+                parsed.pr_tok = pr_tok
+                parsed.com_tok = com_tok
+                if self.verbose:
+                    print("Step: Code analysis successful")
+                    print(f"Insights: {parsed.insights[:100]}...")
+                return parsed
             except Exception as e:
-                print(f"Error in code_analysis on attempt {attempt + 1}: {e}")
+                print(f"Error in code_analysis attempt {attempt + 1}: {e}")
                 if attempt == self.max_attempts - 1:
-                    print("Max attempts reached, using default.")
+                    return CodeAnalysisOutput(pr_tok=pr_tok, com_tok=com_tok)
 
-        return {
-            'insights': insights,
-            'pr_tok': pr_tok,
-            'com_tok': com_tok
-        }
-
-    def content_analysis(self, problem: str, problem_understanding: str, plan: str, code: str) -> dict:
-        context = ""
-        if self.include_mode == 'both':
-            context = f"# Problem:\n{self.sanitize_input(problem)}\n# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-        elif self.include_mode == 'problem_only':
-            context = f"# Problem:\n{self.sanitize_input(problem)}"
-        elif self.include_mode == 'understanding_only':
-            context = f"# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
+    def content_analysis(self, problem: str, problem_understanding: str, plan: str, code: str) -> ContentAnalysisOutput:
+        if self.verbose:
+            print("Step: Performing content analysis")
+        schema = ContentAnalysisOutput.model_json_schema()
         input_prompt = [
             {
                 "role": "user",
-                "content": f"""Evaluate how effectively a plan and generated code, written in {self.language} programming language, align with the requirements of a competitive programming problem, given the problem description and its understanding. Assess the alignment between the problem (and its understanding) and the plan, and between the plan and the code. Identify any mismatches or issues in these alignments, considering edge cases and special cases from the problem understanding. Provide separate confidence scores (0.0 to 1.0) for the problem-plan alignment and plan-code alignment (1.0: perfect match; 0.0: no alignment), and suggest specific improvements for each if the alignment is not strong.
-
-{context}
-
-# Plan:
-{self.sanitize_input(plan)}
-
-# Code:
-```{self.language}
-{self.sanitize_input(code)}
-```
-
-----------------
-IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep insights concise (<150 words each).
-
-## Problem Plan Confidence
-[Score as float]
-
-## Plan Code Confidence
-[Score as float]
-
-## Problem Plan Insights
-[Your insights]
-
-## Plan Code Insights
-[Your insights]
-"""
-            }
+                "content": (
+                    "You are a senior competitive-programming evaluator. "
+                    "Focus ONLY on how well the proposed solution plan and its implementation "
+                    "align with the problem requirements and with each other. "
+                    "Identify any mismatches, omissions, or unnecessary steps, "
+                    "and provide concise insights on both the plan and the code to improve their alignment. "
+                    "Provide the analysis in a clear, readable format, optionally using markdown."
+                    f"Problem Description:\n{problem}\n\n"
+                    f"Problem Understanding:\n{problem_understanding}\n\n"
+                    f"Proposed Plan:\n{plan}\n\n"
+                    f"Code Implementation ({self.language}):\n"
+                    f"```{self.language}\n{code}\n```\n\n"
+                ),
+            },
         ]
-
-        problem_plan_confidence = 0.0
-        plan_code_confidence = 0.0
-        overall_confidence = 0.0
-        problem_plan_insights = 'No insights provided'
-        plan_code_insights = 'No insights provided'
         pr_tok = 0
         com_tok = 0
         for attempt in range(self.max_attempts):
+            if self.verbose:
+                print(f"Step: Content analysis attempt {attempt + 1}")
             try:
-                response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
+                response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_prompt)
                 pr_tok += pr_tok_temp
                 com_tok += com_tok_temp
-                parsed = self.parse_structured_text(response)
-                problem_plan_confidence = float(parsed.get('problem_plan_confidence', 0.0))
-                plan_code_confidence = float(parsed.get('plan_code_confidence', 0.0))
-                overall_confidence = problem_plan_confidence * plan_code_confidence
-                problem_plan_insights = parsed.get('problem_plan_insights', 'No insights provided')
-                plan_code_insights = parsed.get('plan_code_insights', 'No insights provided')
-                break
+                parsed = self.parse_structured_output(response, ContentAnalysisOutput)
+                parsed.pr_tok = pr_tok
+                parsed.com_tok = com_tok
+                if self.verbose:
+                    print("Step: Content analysis successful")
+                    print(f"Insights: {parsed.insights[:100]}...")
+                return parsed
             except Exception as e:
-                print(f"Error in content_analysis on attempt {attempt + 1}: {e}")
+                print(f"Error in content_analysis attempt {attempt + 1}: {e}")
                 if attempt == self.max_attempts - 1:
-                    print("Max attempts reached, using defaults.")
+                    return ContentAnalysisOutput(pr_tok=pr_tok, com_tok=com_tok)
 
-        insights = f"## Problem-Plan Alignment Analysis: {problem_plan_insights}\n## Plan-Code Alignment Analysis: {plan_code_insights}"
-        return {
-            'problem_plan_confidence': max(0.0, min(problem_plan_confidence, 1.0)),
-            'plan_code_confidence': max(0.0, min(plan_code_confidence, 1.0)),
-            'confidence': max(0.0, min(overall_confidence, 1.0)),
-            'problem_plan_insights': problem_plan_insights,
-            'plan_code_insights': plan_code_insights,
-            'insights': insights,
-            'pr_tok': pr_tok,
-            'com_tok': com_tok
-        }
-
-    def get_confidence(self, decision: str, analysis: dict, analysis_name: str) -> float:
+    def get_confidence(self, decision: str, analysis: dict, analysis_name: str) -> ConfidenceOutput:
+        if self.verbose:
+            print(f"Step: Getting confidence for '{decision}' from {analysis_name}")
         meaning = self.analysis_meaning.get(analysis_name, "")
-
+        schema = ConfidenceOutput.model_json_schema()
         prompt = [
             {
                 "role": "user",
-                "content": f"""Given a {analysis_name} analysis. {meaning} Calculate the confidence score (0.0 to 1.0) for choosing to {decision}, where 1.0 means the analysis strongly supports the decision (e.g., insights indicate it's the best fix), and 0.0 means it does not support at all. Provide a brief explanation (50-100 words) of how the score was determined, referencing specific insights.
-
-Insights:
-{self.sanitize_input(analysis.get('insights', ''))}
-
-=============
-IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-## Confidence
-[Score as float]
-
-## Reasoning
-[Your reasoning]
-"""
-            }
+                "content": (
+                    "You are a senior software engineer and technical reviewer. "
+                    "Your task is to assign a confidence score (0.0 to 1.0) for the decision to "
+                    f"'{decision}', based on the following analysis. "
+                    "Provide the response in a clear, readable format, optionally using markdown."
+                    f"Decision: {decision}\n"
+                    f"Analysis Type: {analysis_name}\n"
+                    f"Analysis Meaning: {meaning}\n"
+                    f"Insights: {analysis.get('insights', '')}"
+                ),
+            },
         ]
-
-        score = 0.0
         for attempt in range(self.max_attempts):
+            if self.verbose:
+                print(f"Step: Confidence attempt {attempt + 1}")
             try:
-                response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
-                parsed = self.parse_structured_text(response)
-                score = float(parsed.get('confidence', 0.0))
-                reasoning = parsed.get('reasoning', 'No reasoning provided')
-                break
+                response, _, _ = self.gpt_chat(prompt)
+                parsed = self.parse_structured_output(response, ConfidenceOutput)
+                if self.verbose:
+                    print("Step: Confidence calculated")
+                    print(f"Confidence: {parsed.confidence}")
+                return parsed
             except Exception as e:
-                print(f"Error in get_confidence on attempt {attempt + 1}: {e}")
-                if attempt == self.max_attempts - 1:
-                    print("Max attempts reached, using default score 0.0.")
+                print(f"Error in get_confidence attempt {attempt + 1}: {e}")
+        return ConfidenceOutput()
 
-        return max(0.0, min(score, 1.0))
-
-    def get_consistency(
-        self,
-        decision: str,
-        analysis1: dict, name1: str,
-        analysis2: dict, name2: str
-    ) -> float:
-        ins1 = self.sanitize_input(analysis1.get('insights', '').strip())
-        ins2 = self.sanitize_input(analysis2.get('insights', '').strip())
-
+    def get_consistency(self, decision: str, analysis1: dict, name1: str, analysis2: dict, name2: str) -> ConsistencyOutput:
+        if self.verbose:
+            print(f"Step: Getting consistency for '{decision}' between {name1} and {name2}")
+        ins1 = analysis1.get('insights', '')
+        ins2 = analysis2.get('insights', '')
         name1_meaning = self.analysis_meaning.get(name1, "")
         name2_meaning = self.analysis_meaning.get(name2, "")
-
+        schema = ConsistencyOutput.model_json_schema()
         prompt = [
             {
                 "role": "user",
-                "content": f"""Given insights from two analyses: {name1} and {name2}. 
-{name1} meaning: {name1_meaning}
-{name2} meaning: {name2_meaning}
-Calculate the consistency score (0.0 to 1.0) for choosing to {decision}, where 1.0 means the insights from both analyses are highly consistent and support the decision (e.g., similar issues and fixes suggested), and 0.0 means they are inconsistent or contradictory. Provide a brief explanation (50-100 words) of how the score was determined, referencing specific insights from both analyses.
-
-{name1} insights:
-{ins1}
-
-{name2} insights:
-{ins2}
-
-IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-## Consistency
-[Score as float]
-
-## Reasoning
-[Your reasoning]
-"""
-            }
+                "content": (
+                    "You are a senior software engineer and technical reviewer. "
+                    "Your task is to compute a consistency score (0.0 to 1.0) for the decision to "
+                    f"'{decision}', using two separate analyses. "
+                    "Compare both insights to determine how well they align. "
+                    "Provide the response in a clear, readable format, optionally using markdown."
+                    f"Decision: {decision}\n\n"
+                    f"Analysis 1: {name1}\n"
+                    f"Meaning: {name1_meaning}\n"
+                    f"Insights: {ins1}\n\n"
+                    f"Analysis 2: {name2}\n"
+                    f"Meaning: {name2_meaning}\n"
+                    f"Insights: {ins2}"
+                ),
+            },
         ]
-
-        score = 0.0
         for attempt in range(self.max_attempts):
+            if self.verbose:
+                print(f"Step: Consistency attempt {attempt + 1}")
             try:
-                response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
-                parsed = self.parse_structured_text(response)
-                score = float(parsed.get('consistency', 0.0))
-                reasoning = parsed.get('reasoning', 'No reasoning provided')
-                break
+                response, _, _ = self.gpt_chat(prompt)
+                parsed = self.parse_structured_output(response, ConsistencyOutput)
+                if self.verbose:
+                    print("Step: Consistency calculated")
+                    print(f"Consistency: {parsed.consistency}")
+                return parsed
             except Exception as e:
-                print(f"Error in get_consistency on attempt {attempt + 1}: {e}")
-                if attempt == self.max_attempts - 1:
-                    print("Max attempts reached, using default score 0.0.")
-
-        return max(0.0, min(score, 1.0))
+                print(f"Error in get_consistency attempt {attempt + 1}: {e}")
+        return ConsistencyOutput()
 
     def collaborative_decision(self, plan: str, code: str, outcomes: str, item) -> str:
+        if self.verbose:
+            print("Step: Starting collaborative decision")
         try:
-            problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
-            problem_text = self.sanitize_input(self.data.get_prompt(item))
-
+            problem_understanding, _, _ = self.get_problem_understanding(item)
+            problem_text = self.data.get_prompt(item)
             A_plan = self.plan_analysis(plan, code, outcomes, problem_text, problem_understanding)
             A_code = self.code_analysis(code, outcomes, problem_text, problem_understanding)
             A_content = self.content_analysis(problem_text, problem_understanding, plan, code)
-
             decisions = ['update plan', 'update code only']
             scores = {}
-
             for d in decisions:
+                if self.verbose:
+                    print(f"Step: Scoring decision '{d}'")
                 total = 0.0
                 for name, A_i in [('plan', A_plan), ('code', A_code), ('content', A_content)]:
                     w = self.trust_weights[name]
-                    conf = self.get_confidence(d, A_i, name)
+                    conf_output = self.get_confidence(d, A_i.model_dump(), name)
+                    conf = conf_output.confidence
                     cons_prod = 1.0
                     for oname, A_j in [('plan', A_plan), ('code', A_code), ('content', A_content)]:
                         if oname != name:
-                            cons_prod *= self.get_consistency(d, A_i, name, A_j, oname)
+                            cons_output = self.get_consistency(d, A_i.model_dump(), name, A_j.model_dump(), oname)
+                            cons_prod *= cons_output.consistency
                     total += w * conf * cons_prod
                 scores[d] = total
-
-            final_decision = max(scores, key=scores.get)
-            return final_decision
+                if self.verbose:
+                    print(f"Step: Score for '{d}': {total}")
+            decision = max(scores, key=scores.get)
+            if self.verbose:
+                print("Step: Decision made")
+                print(f"Decision: {decision}")
+            return decision
         except Exception as e:
             print(f"Error in collaborative_decision: {e}")
             return "update code only"
 
-    def debug_plan(
-        self,
-        iteration: int,
-        plan: str,
-        error_analysis: Dict,
-        problem: str,
-        problem_understanding: str
-    ):
-        prev_logs = self.rt.historical_data.get(iteration - 1)
-        rt_prompt = self.rt.generate_prompt_for_plan_update(
-            iteration,
-            error_analysis,
-            problem,
-            problem_understanding,
-            plan,
-            historical_logs=prev_logs
+    def debug_plan(self, iteration: int, plan: str, error_analysis: Dict, problem: str, problem_understanding: str, decision: str):
+        if self.verbose:
+            print(f"Step: Debugging plan at iteration {iteration}")
+        prev_logs = self.rt.historical_data.get(iteration - 1, {})
+        previous_reflection = prev_logs.get('analysis_reflection', 'No previous analysis reflection available')
+        rt_prompt = self.rt.generate_prompt_for_plan_reflection(
+            iteration, error_analysis, problem, problem_understanding, plan, historical_logs=prev_logs
         )
-
         try:
-            rt_response, pr_tok_rt, com_tok_rt = self.gpt_chat(
-                processed_input=[{'role': 'user', 'content': rt_prompt}]
-            )
-            reasoning_trajectory = rt_response.strip()
+            if self.verbose:
+                print("Step: Generating analysis reflection for plan")
+            analysis_reflection, _, _ = self.gpt_chat([{
+                'role': 'user',
+                'content': rt_prompt
+            }])
+            if self.verbose:
+                print("Step: Analysis reflection generated")
+                print(f"Reflection: {analysis_reflection[:100]}...")
         except Exception as e:
-            print(f"Error in debug_plan (gpt_chat): {e}")
-            reasoning_trajectory = "Error generating reasoning trajectory"
-
-        context = ""
-        if self.include_mode == 'both':
-            context = f"# Problem: {self.sanitize_input(problem)}\n# Problem Understanding: {self.sanitize_input(problem_understanding)}"
-        elif self.include_mode == 'problem_only':
-            context = f"# Problem: {self.sanitize_input(problem)}"
-        elif self.include_mode == 'understanding_only':
-            context = f"# Problem Understanding: {self.sanitize_input(problem_understanding)}"
-
-        update_prompt = [{
-            'role': 'user',
-            'content': (
-                f"""Given a competitive programming problem, its understanding, and a plan to solve it, but this plan has some troubles that need to be updated with insights. Please modify the plan accordingly.
-
-{context}
-
-# Current Planning:
-{self.sanitize_input(plan)}
-
-# Insights:
-{self.sanitize_input(error_analysis['insights'])}
-
-# Reasoning Trajectory:
-{self.sanitize_input(reasoning_trajectory)}
-
-# Instructions:
-Output only the revised plan text. Do not add extra explanation or words.
+            print(f"Error generating analysis reflection for plan: {e}")
+            analysis_reflection = "Error generating analysis reflection"
+        update_prompt = [
+            {
+                'role': 'user',
+                'content': f"""Given a competitive programming problem, its understanding, and a plan to solve it, but this plan has errors or problems that need to be addressed.
+Problem: {problem}
+Problem Understanding: {problem_understanding}
+Current Planning: {plan}
+Test Log: {error_analysis.get('test_results', '')}
+Analysis Reflection: {analysis_reflection}
+Using the provided analysis reflection and test log, refine the plan to correct the identified issues.
+Provide the refined plan in a clear, readable format, optionally using markdown.
 """
-            )
-        }]
-
+            }
+        ]
         try:
-            updated, pr_tok_up, com_tok_up = self.gpt_chat(processed_input=update_prompt)
-            revised_plan = updated.strip()
+            if self.verbose:
+                print("Step: Making API call for plan update")
+            updated_response, _, _ = self.gpt_chat(update_prompt)
+            updated_parsed = self.parse_structured_output(updated_response, Planning)
+            revised_plan = updated_parsed.planning.strip()
+            if self.verbose:
+                print("Step: Plan updated")
+                print(f"Revised plan: {revised_plan[:100]}...")
         except Exception as e:
-            print(f"Error in debug_plan (update): {e}")
+            print(f"Error debugging plan: {e}")
             revised_plan = plan
-
         self.rt.update_historical_data(iteration, {
             'previous_plan': plan,
             'previous_success_rate': error_analysis.get('success_rate'),
-            'previous_iteration': iteration - 1
+            'previous_iteration': iteration - 1,
+            'analysis_reflection': analysis_reflection
         })
-        return revised_plan, reasoning_trajectory
+        if self.verbose:
+            print("Step: Historical data updated for plan")
+        return revised_plan, analysis_reflection
 
-    def debug_code(
-        self,
-        iteration: int,
-        plan: str,
-        code: str,
-        error_analysis: Dict,
-        problem: str,
-        problem_understanding: str
-    ):
-        prev_logs = self.rt.historical_data.get(iteration - 1)
-        rt_prompt = self.rt.generate_prompt_for_code_update(
-            iteration,
-            error_analysis,
-            problem,
-            problem_understanding,
-            plan,
-            code,
-            historical_logs=prev_logs
+    def debug_code(self, iteration: int, plan: str, code: str, error_analysis: Dict, problem: str, problem_understanding: str, decision: str):
+        if self.verbose:
+            print(f"Step: Debugging code at iteration {iteration}")
+        prev_logs = self.rt.historical_data.get(iteration - 1, {})
+        previous_reflection = prev_logs.get('analysis_reflection', 'No previous analysis reflection available')
+        rt_prompt = self.rt.generate_prompt_for_code_reflection(
+            iteration, error_analysis, problem, problem_understanding, plan, code, historical_logs=prev_logs
         )
-
         try:
-            rt_response, pr_tok_rt, com_tok_rt = self.gpt_chat(
-                processed_input=[{'role': 'user', 'content': rt_prompt}]
-            )
-            reasoning_trajectory = rt_response.strip()
+            if self.verbose:
+                print("Step: Generating analysis reflection for code")
+            analysis_reflection, _, _ = self.gpt_chat([{
+                'role': 'user',
+                'content': rt_prompt
+            }])
+            if self.verbose:
+                print("Step: Analysis reflection generated")
+                print(f"Reflection: {analysis_reflection[:100]}...")
         except Exception as e:
-            print(f"Error in debug_code (gpt_chat): {e}")
-            reasoning_trajectory = "Error generating reasoning trajectory"
-
-        context = ""
-        if self.include_mode == 'both':
-            context = f"# Problem: {self.sanitize_input(problem)}\n# Problem Understanding: {self.sanitize_input(problem_understanding)}"
-        elif self.include_mode == 'problem_only':
-            context = f"# Problem: {self.sanitize_input(problem)}"
-        elif self.include_mode == 'understanding_only':
-            context = f"# Problem Understanding: {self.sanitize_input(problem_understanding)}"
-
-        code_prompt = [{
-            'role': 'user',
-            'content': (
-                f"""Given a competitive programming problem, its understanding, and generated {self.language} code to solve the problem, but the generated code cannot pass sample test cases. Improve your code to solve the problem correctly.
-
-{context}
-
-## Planning:
-{self.sanitize_input(plan)}
-
-## Code:
-```{self.language}
-{self.sanitize_input(code)}
+            print(f"Error generating analysis reflection for code: {e}")
+            analysis_reflection = "Error generating analysis reflection"
+        code_prompt = [
+            {
+                'role': 'user',
+                'content': f"""Given a competitive programming problem, its understanding, and generated {self.language} code to solve the problem, but the generated code cannot pass sample test cases.
+Problem: {problem}
+Problem Understanding: {problem_understanding}
+Planning: {plan}
+Code:
+```python
+{code}
 ```
-
-## Test Report:
-{self.sanitize_input(error_analysis.get('test_results',''))}
-
-## Insights:
-{self.sanitize_input(error_analysis['insights'])}
-
-## Reasoning Trajectory:
-{self.sanitize_input(reasoning_trajectory)}
-
-## Instructions:
-Output only the revised {self.language} code. Do not add extra explanation or words.
+Test Log (F(t)): {error_analysis.get('test_results','')}
+Analysis Reflection: {analysis_reflection}
+Using the provided analysis reflection and test log, refine the code to correct the identified issues.
+Provide the revised code in a clear, readable format, optionally within ```{self.language} ... ``` markdown.
 """
-            )
-        }]
-
+            }
+        ]
         try:
-            updated, pr_tok_up, com_tok_up = self.gpt_chat(processed_input=code_prompt)
-            revised_code = self.parse_code(updated)
+            if self.verbose:
+                print("Step: Making API call for code update")
+            updated_response, _, _ = self.gpt_chat(code_prompt)
+            updated_parsed = self.parse_structured_output(updated_response, CodeOutput)
+            revised_code = self.parse_code(updated_response)  # Note: Changed to updated_response if CodeOutput not defined, but assuming it is
+            if self.verbose:
+                print("Step: Code updated")
+                print(f"Revised code: {revised_code[:100]}...")
         except Exception as e:
-            print(f"Error in debug_code (update): {e}")
+            print(f"Error debugging code: {e}")
             revised_code = code
-
         self.rt.update_historical_data(iteration, {
             'previous_code': code,
             'previous_success_rate': error_analysis.get('success_rate'),
-            'previous_iteration': iteration - 1
+            'previous_iteration': iteration - 1,
+            'analysis_reflection': analysis_reflection
         })
-        return revised_code, reasoning_trajectory
+        if self.verbose:
+            print("Step: Historical data updated for code")
+        return revised_code, analysis_reflection
 
     def _inner_run(self, item):
+        if self.verbose:
+            print("Step: Starting inner run")
         pr_tok = 0
         com_tok = 0
-
         try:
-            plannings, pr_tok_p, com_tok_p = self.generate_plans(item)
+            plans, pr_tok_p, com_tok_p = self.generate_plans(item)
             pr_tok += pr_tok_p
             com_tok += com_tok_p
+            if self.verbose:
+                print("Step: Plans generated")
+                print(f"Number of plans: {len(plans)}")
         except Exception as e:
-            print(f"Error in _inner_run (generate_plans): {e}")
-            plannings = []
-
-        selected_plannings = plannings[:self.top_plan]
-
+            print(f"Error generating plans: {e}")
+            plans = []
+        if not plans:
+            print("Warning: No valid plans generated. Returning default code.")
+            return "# No valid solution generated", pr_tok, com_tok
+        selected_plannings = plans[:self.top_plan]
         best_code = ""
-        flag = False
         test_log = ""
-
-        for plan_idx, planning_with_ex in enumerate(selected_plannings, 1):
-            plan, confidence, example = planning_with_ex
-            approach_name = example.get('description', '') if 'description' in example else ''
-            approach_tutorial = example.get('planning', '') if 'planning' in example else ''
-            algorithm_prompt = f"## Relevant Approach: {self.sanitize_input(approach_name)}\n{self.sanitize_input(approach_tutorial)}"
-            sample_io_prompt = f"## Sample Test cases: \n{self.get_sample_io_str(item)}\n"
-            if isinstance(self.data, (APPSDataset, CodeContestDataset, XCodeDataset)):
-                std_input_prompt = "## Note: Strictly follow the input and output format. The input should be taken from Standard input and output should be given to standard output. If you are writing a function then after the function definition take input using `input()` function then call the function with specified parameters and finally print the output of the function. Do not add extra print statement otherwise it will failed the test cases."
-            else:
-                std_input_prompt = ""
-
+        code_score = 0.0
+        for plan_idx, plan_output in enumerate(selected_plannings, 1):
+            if self.verbose:
+                print(f"Step: Processing plan {plan_idx}")
+            planning = plan_output.planning
+            best_code = plan_output.code
+            code_score = plan_output.code_score
+            test_log = plan_output.test_log
             try:
-                best_code, flag, test_log, score, pr_tok_c, com_tok_c = self.generate_codes_from_plan(item, plan, algorithm_prompt, sample_io_prompt)
-                pr_tok += pr_tok_c
-                com_tok += com_tok_c
+                passed, test_log = self.data.evaluate_sample_io(item, best_code, self.language)
+                if passed:
+                    if self.verbose:
+                        print("Step: Code passed all sample test cases. Early stopping.")
+                    return best_code, pr_tok, com_tok
+                if self.verbose:
+                    print(f"Step: Initial evaluation - Score: {code_score}, Passed: {passed}")
             except Exception as e:
-                print(f"Error in _inner_run (generate_codes_from_plan) for plan {plan_idx}: {e}")
-                continue
-
-            if flag:
-                return best_code, pr_tok, com_tok
-
+                print(f"Error evaluating initial code: {e}")
+                test_log = f"Evaluation failed: {e}"
             for i in range(1, self.t + 1):
+                if self.verbose:
+                    print(f"Step: Iteration {i} for plan {plan_idx}")
                 try:
                     problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
                     pr_tok += pr_tok_u
                     com_tok += com_tok_u
                 except Exception as e:
-                    print(f"Error in _inner_run (get_problem_understanding) iteration {i}: {e}")
+                    print(f"Error getting problem understanding: {e}")
                     problem_understanding = ""
-
                 try:
-                    decision = self.collaborative_decision(plan, best_code, test_log, item)
+                    decision = self.collaborative_decision(planning, best_code, test_log, item)
+                    if self.verbose:
+                        print(f"Step: Decision made: {decision}")
                 except Exception as e:
-                    print(f"Error in _inner_run (collaborative_decision) iteration {i}: {e}")
+                    print(f"Error in decision: {e}")
                     decision = "update code only"
-
                 if decision == 'update plan':
                     try:
-                        A_plan = self.plan_analysis(plan, best_code, test_log, self.data.get_prompt(item), problem_understanding)
-                        plan, reasoning_trajectory = self.debug_plan(i + 1, plan, {
-                            'insights': A_plan['insights'],
+                        A_plan = self.plan_analysis(planning, best_code, test_log, self.data.get_prompt(item), problem_understanding)
+                        revised_plan, _ = self.debug_plan(i, planning, {
+                            'insights': A_plan.insights,
                             'test_results': test_log,
-                            'success_rate': score,
-                        }, self.data.get_prompt(item), problem_understanding)
-
-                        code, flag, test_log, score, p_c2, c_c2 = self.generate_codes_from_plan(
-                            item, plan, algorithm_prompt="", sample_io_prompt=sample_io_prompt
-                        )
-                        pr_tok += p_c2
-                        com_tok += c_c2
-                        best_code = code
+                            'success_rate': code_score * 100,
+                        }, self.data.get_prompt(item), problem_understanding, decision)
+                        best_code, code_score, test_log, pr_tok_code, com_tok_code = self.generate_code_from_plan(item, revised_plan, self.data.get_prompt(item), self.get_sample_io_str(item))
+                        planning = revised_plan
+                        pr_tok += pr_tok_code
+                        com_tok += com_tok_code
+                        try:
+                            passed, test_log = self.data.evaluate_sample_io(item, best_code, self.language)
+                            if passed:
+                                if self.verbose:
+                                    print("Step: Updated code passed all sample test cases. Early stopping.")
+                                return best_code, pr_tok, com_tok
+                            if self.verbose:
+                                print(f"Step: Plan updated - New code score: {code_score}, Passed: {passed}")
+                        except Exception as e:
+                            print(f"Error evaluating updated code: {e}")
+                            test_log = f"Evaluation failed: {e}"
                     except Exception as e:
-                        print(f"Error in _inner_run (update plan) iteration {i}: {e}")
+                        print(f"Error updating plan: {e}")
                         continue
                 else:
                     try:
                         A_code = self.code_analysis(best_code, test_log, self.data.get_prompt(item), problem_understanding)
-                        best_code, reasoning_trajectory = self.debug_code(i + 1, plan, best_code, {
-                            'insights': A_code['insights'],
+                        revised_code, _ = self.debug_code(i, planning, best_code, {
+                            'insights': A_code.insights,
                             'test_results': test_log,
-                            'success_rate': score,
-                        }, self.data.get_prompt(item), problem_understanding)
+                            'success_rate': code_score * 100,
+                        }, self.data.get_prompt(item), problem_understanding, decision)
+                        best_code = revised_code
+                        try:
+                            passed, test_log = self.data.evaluate_sample_io(item, best_code, self.language)
+                            code_score = self.compute_score(test_log)
+                            if passed:
+                                if self.verbose:
+                                    print("Step: Updated code passed all sample test cases. Early stopping.")
+                                return best_code, pr_tok, com_tok
+                            if self.verbose:
+                                print(f"Step: Code updated - New code score: {code_score}, Passed: {passed}")
+                        except Exception as e:
+                            print(f"Error evaluating updated code: {e}")
+                            test_log = f"Evaluation failed: {e}"
+                            code_score = 0.0
                     except Exception as e:
-                        print(f"Error in _inner_run (update code) iteration {i}: {e}")
+                        print(f"Error updating code: {e}")
                         continue
-
-                try:
-                    flag, test_log = self.data.evaluate_sample_io(item, best_code, self.language)
-                except Exception as e:
-                    print(f"Error in _inner_run (evaluate_sample_io) iteration {i}: {e}")
-                    flag, test_log = False, f"Evaluation failed: {e}"
-
-                if flag:
-                    return best_code, pr_tok, com_tok
-
+        if self.verbose:
+            print("Step: Process completed without passing all sample test cases")
         return best_code, pr_tok, com_tok
 
     def run_single_pass(self, item: dict):
+        if self.verbose:
+            print("Step: Starting single pass run")
         max_retries = 3
         for attempt in range(1, max_retries + 1):
+            if self.verbose:
+                print(f"Step: Run attempt {attempt}")
             try:
+                item['api_calls'] = item.get('api_calls', 0)
                 result = self._inner_run(item)
+                if self.verbose:
+                    print("Step: Run successful")
                 return result
             except Exception as e:
-                print(f"[run_single_pass] Attempt {attempt} caught exception: {e}")
-                print(f"[run_single_pass] Item: {item}")
+                print(f"Attempt {attempt} failed: {e}")
                 if attempt == max_retries:
-                    print(f"[run_single_pass] ERROR: All {max_retries} attempts failed. Returning fallback ('',0,0).")
-                    return "", 0, 0
-
-
-
-################################################################################################################################
-
-# from typing import List, Optional, Dict
-# import tiktoken
-# import os
-# import json
-# import re
-# import sys
-# import time
-# from datetime import datetime
-# from copy import deepcopy
-# import logging
-
-# from .Base import BaseStrategy
-# from models.Base import BaseModel
-
-# from datasets.Dataset import Dataset
-# from datasets.APPSDataset import APPSDataset
-# from datasets.MBPPDataset import MBPPDataset
-# from datasets.XCodeDataset import XCodeDataset
-# from datasets.HumanEvalDataset import HumanDataset
-# from datasets.CodeContestDataset import CodeContestDataset
-
-# from results.Results import Results
-# from evaluations.func_evaluate import evaluate_io
-# import numpy as np
-# from typing import Optional, Dict
-
-# # Configure logging
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format='%(asctime)s - %(levelname)s - %(message)s',
-#     handlers=[
-#         logging.FileHandler('coevolvev2.log', mode='a'),  # Append to log file
-#         logging.StreamHandler()  # Also print to console
-#     ]
-# )
-# logger = logging.getLogger(__name__)
-
-# class ReasoningTrajectory:
-#     def __init__(self, t: int):
-#         self.t = t  
-#         self.historical_data: Dict[int, Dict] = {}  
-
-#     def generate_prompt_for_plan_update(
-#         self,
-#         iteration: int,
-#         error_analysis: Dict,
-#         problem: str,
-#         problem_understanding: str,
-#         plan: str,
-#         code: Optional[str] = None,
-#         historical_logs: Optional[Dict] = None
-#     ) -> str:
-#         def sanitize(text: Optional[str]) -> str:
-#             if not isinstance(text, str):
-#                 text = str(text)
-#             return text.replace('%', '%%')
-
-#         test_results = sanitize(error_analysis.get('test_results', ''))
-#         analysis = sanitize(error_analysis.get('analysis', ''))
-#         success_rate = sanitize(str(error_analysis.get('success_rate', '0')))
-#         problem = sanitize(problem)
-#         problem_understanding = sanitize(problem_understanding)
-#         plan = sanitize(plan)
-
-#         if iteration == 1:
-#             prompt = f"""
-# You are the Reasoning Trajectory module (R_traj) in the CoEvolve framework, specializing in iterative plan refinement for competitive programming.
-
-# ## Context
-# Problem: {problem}
-# Problem Understanding: {problem_understanding}
-# Initial Plan: {plan}
-# Test Results: {test_results}
-# Error Analysis: {analysis}
-# Success Rate: {success_rate}%
-
-# ## Task
-# Create the initial reasoning prompt for plan revision in iteration 1. With no historical data, focus on:
-# 1. Anticipating potential weaknesses in the plan based on the problem's details and understanding.
-# 2. Drawing on planning strategies and common pitfalls, considering edge cases and special cases.
-# 3. Setting forward-looking priorities for a thorough plan.
-
-# ## Instructions
-# Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-# ## Predicted Plan Vulnerabilities
-# [Your vulnerabilities]
-
-# ## Domain Expertise Synthesis
-# [Your synthesis]
-
-# ## Strategic Prioritization
-# [Your prioritization]
-
-# ## Reasoning Prompt
-# [Your prompt]
-# """
-#         else:
-#             prev = historical_logs or {}
-#             prev_iteration = prev.get('previous_iteration', iteration - 1)
-#             prev_success_rate = sanitize(str(prev.get('previous_success_rate', '0')))
-#             previous_plan = sanitize(prev.get('previous_plan', ''))
-
-#             prompt = f"""
-# You are the Reasoning Trajectory module (R_traj) in the CoEvolve framework, specializing in iterative plan refinement.
-
-# ## Context
-# Problem: {problem}
-# Problem Understanding: {problem_understanding}
-# Current Plan (Iteration {iteration}): {plan}
-# Prior Plan (Iteration {prev_iteration}): {previous_plan}
-# Test Results: {test_results}
-# Error Analysis: {analysis}
-# Success Rate: {success_rate}%
-
-# ## Task
-# Create a reasoning prompt for plan revision. Follow these steps:
-# 1. Plan Error Localization
-# 2. Historical Plan Analysis
-# 3. Plan Adjustment Priorities, considering edge cases and special cases from the problem understanding
-# 4. Reasoning Prompt for Plan Update
-
-# ## Instructions
-# Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-# ## Plan Error Localization
-# [Your localization]
-
-# ## Historical Plan Analysis
-# [Your analysis]
-
-# ## Plan Adjustment Priorities
-# [Your priorities]
-
-# ## Reasoning Prompt
-# [Your prompt]
-# """
-#         logger.info(f"Generated prompt for plan_update (iteration {iteration}):\n{prompt}")
-#         return prompt
-
-#     def generate_prompt_for_code_update(
-#         self,
-#         iteration: int,
-#         error_analysis: Dict,
-#         problem: str,
-#         problem_understanding: str,
-#         plan: str,
-#         code: str,
-#         historical_logs: Optional[Dict] = None
-#     ) -> str:
-#         def sanitize(text: Optional[str]) -> str:
-#             if not isinstance(text, str):
-#                 text = str(text)
-#             return text.replace('%', '%%')
-
-#         test_results = sanitize(error_analysis.get('test_results', ''))
-#         analysis = sanitize(error_analysis.get('analysis', ''))
-#         success_rate = sanitize(str(error_analysis.get('success_rate', '0')))
-#         problem = sanitize(problem)
-#         problem_understanding = sanitize(problem_understanding)
-#         plan = sanitize(plan)
-#         code = sanitize(code)
-
-#         if iteration == 1:
-#             prompt = f"""
-# You are the Reasoning Trajectory module (R_traj), specializing in iterative code refinement.
-
-# ## Context
-# Problem: {problem}
-# Problem Understanding: {problem_understanding}
-# Plan: {plan}
-# Initial Code: {code}
-# Test Results: {test_results}
-# Error Analysis: {analysis}
-# Success Rate: {success_rate}%
-
-# ## Task
-# Create the initial reasoning prompt for code revision in iteration 1. Focus on potential weaknesses, proven coding strategies, and priorities for robust code, considering edge cases and special cases from the problem understanding.
-
-# ## Instructions
-# Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-# ## Predicted Code Vulnerabilities
-# [Your vulnerabilities]
-
-# ## Domain Expertise Synthesis
-# [Your synthesis]
-
-# ## Strategic Prioritization
-# [Your prioritization]
-
-# ## Reasoning Prompt
-# [Your prompt]
-# """
-#         else:
-#             prev = historical_logs or {}
-#             prev_iteration = prev.get('previous_iteration', iteration - 1)
-#             prev_success_rate = sanitize(str(prev.get('previous_success_rate', '0')))
-#             previous_code = sanitize(prev.get('previous_code', ''))
-
-#             prompt = f"""
-# You are the Reasoning Trajectory module (R_traj), specializing in iterative code refinement.
-
-# ## Context
-# Problem: {problem}
-# Problem Understanding: {problem_understanding}
-# Plan: {plan}
-# Current Code (Iteration {iteration}): {code}
-# Prior Code (Iteration {prev_iteration}): {previous_code}
-# Test Results: {test_results}
-# Error Analysis: {analysis}
-# Success Rate: {success_rate}%
-
-# ## Task
-# Create a reasoning prompt for code revision. Follow these steps:
-# 1. Code Error Localization
-# 2. Historical Code Analysis
-# 3. Code Adjustment Priorities, considering edge cases and special cases from the problem understanding
-# 4. Reasoning Prompt for Code Update
-
-# ## Instructions
-# Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-# ## Code Error Localization
-# [Your localization]
-
-# ## Historical Code Analysis
-# [Your analysis]
-
-# ## Code Adjustment Priorities
-# [Your priorities]
-
-# ## Reasoning Prompt
-# [Your prompt]
-# """
-#         logger.info(f"Generated prompt for code_update (iteration {iteration}):\n{prompt}")
-#         return prompt
-
-#     def update_historical_data(self, iteration: int, historical_logs: Dict):
-#         self.historical_data[iteration] = historical_logs
-#         logger.info(f"Updated historical data for iteration {iteration}: {historical_logs}")
-
-# mapping = {
-#     1: "one (01)",
-#     2: "two (02)",
-#     3: "three (03)",
-#     4: "four (04)",
-#     5: "five (05)",
-#     6: "six (06)",
-#     7: "seven (07)",
-#     8: "eight (08)",
-#     9: "nine (09)",
-# }
-
-# class CoEvolvev2(BaseStrategy):
-#     def __init__(
-#         self,
-#         k: int = 3,
-#         t: int = 5,
-#         max_attempts: int = 3,
-#         include_mode: str = 'understanding_only',
-#         *args,
-#         **kwargs
-#     ):
-#         super().__init__(*args, **kwargs)
-#         self.k = k
-#         self.top_plan = 1
-#         self.t = t
-#         self.number_of_code_per_plan = 3
-#         self.trust_weights = {
-#             'plan': 0.4,
-#             'code': 0.3,
-#             'content': 0.3
-#         }
-#         self.analysis_meaning = {
-#             "plan": "The plan analysis identifies failures in the planning approach based on test logs and suggests specific modifications to the plan.",
-#             "code": "The code analysis identifies errors in the code implementation based on test logs and suggests specific fixes to the code.",
-#             "content": "The content analysis identifies mismatches between the problem, plan, and code, and suggests improvements for better alignment.",
-#         }
-#         self.history = []
-#         self.rt = ReasoningTrajectory(t=self.t)
-#         self.max_attempts = max_attempts
-#         if include_mode not in ['both', 'problem_only', 'understanding_only']:
-#             raise ValueError("include_mode must be 'both', 'problem_only', or 'understanding_only'")
-#         self.include_mode = include_mode
-#         logger.info(f"Initialized CoEvolvev2 with k={k}, t={t}, max_attempts={max_attempts}, include_mode={include_mode}")
-
-#     def parse_structured_text(self, response: str) -> dict:
-#         response = response.strip()
-#         sections = {}
-#         current_key = None
-#         current_value = []
-        
-#         for line in response.splitlines():
-#             if line.startswith('## '):
-#                 if current_key:
-#                     sections[current_key] = '\n'.join(current_value).strip()
-#                 current_key = line[3:].strip().lower().replace(' ', '_')
-#                 current_value = []
-#             elif current_key:
-#                 current_value.append(line)
-        
-#         if current_key:
-#             sections[current_key] = '\n'.join(current_value).strip()
-        
-#         if 'code' in sections:
-#             sections['code'] = self.parse_code(sections['code'])
-        
-#         logger.info(f"Parsed structured text response into sections: {sections.keys()}")
-#         return sections
-
-#     def parse_code(self, response: str) -> str:
-#         if "```" not in response:
-#             return response
-
-#         code_pattern = r'```((.|\n)*?)```'
-#         if "```Python" in response:
-#             code_pattern = r'```Python((.|\n)*?)```'
-#         if "```Python3" in response:
-#             code_pattern = r'```Python3((.|\n)*?)```'
-#         if "```python" in response:
-#             code_pattern = r'```python((.|\n)*?)```'
-#         if "```python3" in response:
-#             code_pattern = r'```python3((.|\n)*?)```'
-#         if "```C" in response:
-#             code_pattern = r'```C((.|\n)*?)```'
-#         if "```c" in response:
-#             code_pattern = r'```c((.|\n)*?)```'
-#         if "```C++" in response:
-#             code_pattern = r'```C\+\+((.|\n)*?)```'
-#         if "```c++" in response:
-#             code_pattern = r'```c\+\+((.|\n)*?)```'
-#         if "```Java" in response:
-#             code_pattern = r'```Java((.|\n)*?)```'
-#         if "```java" in response:
-#             code_pattern = r'```java((.|\n)*?)```'
-#         if "```Node" in response:
-#             code_pattern = r'```Node((.|\n)*?)```'
-#         if "```node" in response:
-#             code_pattern = r'```node((.|\n)*?)```'
-#         if "```Rust" in response:
-#             code_pattern = r'```Rust((.|\n)*?)```'
-#         if "```rust" in response:
-#             code_pattern = r'```rust((.|\n)*?)```'
-#         if "```PHP" in response:
-#             code_pattern = r'```PHP((.|\n)*?)```'
-#         if "```php" in response:
-#             code_pattern = r'```php((.|\n)*?)```'
-#         if "```Go" in response:
-#             code_pattern = r'```Go((.|\n)*?)```'
-#         if "```go" in response:
-#             code_pattern = r'```go((.|\n)*?)```'
-#         if "```Ruby" in response:
-#             code_pattern = r'```Ruby((.|\n)*?)```'
-#         if "```ruby" in response:
-#             code_pattern = r'```ruby((.|\n)*?)```'
-#         if "```C#" in response:
-#             code_pattern = r'```C#((.|\n)*?)```'
-#         if "```c#" in response:
-#             code_pattern = r'```c#((.|\n)*?)```'
-#         if "```csharp" in response:
-#             code_pattern = r'```csharp((.|\n)*?)```'
-
-#         code_blocks = re.findall(code_pattern, response, re.DOTALL)
-
-#         if isinstance(code_blocks[-1], (tuple, list)):
-#             code_str = "\n".join(code_blocks[-1])
-#         elif isinstance(code_blocks[-1], str):
-#             code_str = code_blocks[-1]
-#         else:
-#             code_str = response
-
-#         code_str = code_str.strip()
-#         logger.info(f"Parsed code from response: {code_str[:100]}...")  # Log first 100 chars
-#         return code_str
-
-#     @staticmethod
-#     def trim_text(text: str, trimmed_text: str):
-#         result = text.replace(trimmed_text, '').strip()
-#         logger.info(f"Trimmed text: {result[:100]}...")  # Log first 100 chars
-#         return result
-
-#     def sanitize_input(self, text: Optional[str]) -> str:
-#         if not isinstance(text, str):
-#             text = str(text)
-#         result = text.replace('%', '%%')
-#         logger.info(f"Sanitized input: {result[:100]}...")  # Log first 100 chars
-#         return result
-
-#     def get_sample_io_str(self, item) -> str:
-#         if isinstance(self.data, XCodeDataset):
-#             result = self.get_sample_io_xcode(item)
-#         else:
-#             sample_io = item['sample_io']
-#             if len(sample_io) > 0:
-#                 if isinstance(sample_io[0], str):
-#                     result = "\n".join(self.sanitize_input(io) for io in sample_io)
-#                 if isinstance(sample_io[0], dict):
-#                     result = "\n".join([f"Input:\n{self.sanitize_input(io['input'])}\nExpected output:\n{self.sanitize_input(io['output'][0])}" for io in sample_io])
-#             else:
-#                 result = ''
-#         logger.info(f"Generated sample I/O string: {result[:100]}...")  # Log first 100 chars
-#         return result
-
-#     def get_sample_io_xcode(self, item):
-#         result = "\n".join([f"Input:\n{self.sanitize_input(item['sample_inputs'])}\nExpected output:\n{self.sanitize_input(item['sample_outputs'])}"])
-#         logger.info(f"Generated Xcode sample I/O: {result[:100]}...")  # Log first 100 chars
-#         return result
-
-#     def get_problem_understanding(self, item) -> str:
-#         input_prompt = [
-#             {
-#                 "role": "user",
-#                 "content": f"""You are an expert in competitive programming. Your task is to analyze a problem description and provide a concise understanding of the problem, including its requirements, constraints, objectives, and potential edge cases or special cases. Identify edge cases (e.g., boundary conditions, invalid inputs, or extreme scenarios) and special cases (e.g., unique input patterns or problem-specific conditions) that need attention, and provide examples of these cases beyond the provided sample I/O.
-
-#     # Problem:
-#     {self.sanitize_input(self.data.get_prompt(item))}
-
-#     # Sample I/O:
-#     {self.get_sample_io_str(item)}
-
-#     ----------------
-#     IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-#     ## Understanding
-#     [Your understanding]
-# """
-#             }
-#         ]
-
-#         logger.info(f"Prompt for get_problem_understanding:\n{input_prompt[0]['content']}")
-
-#         understanding = 'No understanding provided'
-#         pr_tok = 0
-#         com_tok = 0
-#         for attempt in range(self.max_attempts):
-#             try:
-#                 response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
-#                 pr_tok += pr_tok_temp
-#                 com_tok += com_tok_temp
-#                 logger.info(f"Response from get_problem_understanding (attempt {attempt + 1}):\n{response[:200]}...")  # Log first 200 chars
-#                 parsed = self.parse_structured_text(response)
-#                 understanding = parsed.get('understanding', 'No understanding provided')
-#                 break
-#             except Exception as e:
-#                 logger.error(f"Error in get_problem_understanding on attempt {attempt + 1}: {e}", exc_info=True)
-#                 if attempt == self.max_attempts - 1:
-#                     logger.warning("Max attempts reached, using default understanding.")
-
-#         logger.info(f"Parsed understanding: {understanding[:100]}...")  # Log first 100 chars
-#         return understanding, pr_tok, com_tok
-
-#     def generate_plans(self, item):
-#         plannings = []
-#         pr_tok = 0
-#         com_tok = 0
-#         previous_approaches = ""
-
-#         problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
-#         pr_tok += pr_tok_u
-#         com_tok += com_tok_u
-#         logger.info(f"Problem understanding: {problem_understanding[:100]}...")
-
-#         problem_text = self.sanitize_input(self.data.get_prompt(item))
-#         context = ""
-#         if self.include_mode == 'both':
-#             context = f"# Problem:\n{problem_text}\n# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-#         elif self.include_mode == 'problem_only':
-#             context = f"# Problem:\n{problem_text}"
-#         elif self.include_mode == 'understanding_only':
-#             context = f"# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
-#         for t in range(1, self.k + 1):
-#             diff_prompt = "" if t == 1 else f", different from the following previous approaches: {previous_approaches}"
-
-#             input_recall = [
-#                 {
-#                     "role": "user",
-#                     "content": f"""Given a problem and its understanding, recall an approach that can solve it{diff_prompt}, provide a tutorial for the approach, then recall a relevant problem that uses this approach, and explain with plan and code.
-
-# {context}
-
-# # Approach:
-# Recall one approach (e.g., Brute-force, Dynamic Programming, Divide-and-conquer, Greedy, Backtracking, Recursive, Binary search, and so on) that can solve the problem.
-
-# # Tutorial:
-# Write a useful tutorial about the approach. Provide a high level generic tutorial for solving this type of problem. Do not generate code.
-
-# # Exemplar:
-# Recall one relevant and distinct problem (different from the problem mentioned above) that uses this approach. For the problem,
-# 1. describe it
-# 2. generate {self.language} code step by step to solve that problem using the approach
-# 3. finally generate a planning to solve that problem using the approach
-
-# ----------------
-# IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-# ## Approach Name
-# [Your approach name]
-
-# ## Tutorial
-# [Your tutorial text]
-
-# ## Problem Description
-# [Your problem description]
-
-# ## Code
-# ``` {self.language}
-# [Your code here]
-# ```
-
-# ## Planning
-# [Your planning text]
-# """
-#                 },
-#             ]
-
-#             logger.info(f"Prompt for generate_plans (approach {t}):\n{input_recall[0]['content']}")
-
-#             parsed_response = None
-#             pr_tok_1 = 0
-#             com_tok_1 = 0
-#             for attempt in range(self.max_attempts):
-#                 try:
-#                     response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_recall)
-#                     pr_tok_1 += pr_tok_temp
-#                     com_tok_1 += com_tok_temp
-#                     item['api_calls'] = item.get('api_calls', 0) + 1
-#                     logger.info(f"Response from generate_plans (approach {t}, attempt {attempt + 1}):\n{response[:200]}...")
-#                     parsed_response = self.parse_structured_text(response)
-#                     break
-#                 except Exception as e:
-#                     logger.error(f"Error in generate_plans (recall) on attempt {attempt + 1}: {e}", exc_info=True)
-#                     if attempt == self.max_attempts - 1:
-#                         logger.warning("Max attempts reached, skipping this approach.")
-
-#             pr_tok += pr_tok_1
-#             com_tok += com_tok_1
-#             if parsed_response is None:
-#                 continue
-
-#             approach_name = parsed_response.get('approach_name', '')
-#             approach_tutorial = parsed_response.get('tutorial', '')
-#             algorithm_prompt = f"## Relevant Approach: {self.sanitize_input(approach_name)}\n{self.sanitize_input(approach_tutorial)}"
-#             example_description = parsed_response.get('problem_description', '')
-#             example_planning = parsed_response.get('planning', '')
-#             example_code = parsed_response.get('code', '')
-
-#             previous_approaches += f"\n- {self.sanitize_input(approach_name)}"
-#             logger.info(f"Parsed response for approach {t}: approach_name={approach_name}, tutorial={approach_tutorial[:50]}...")
-
-#             sample_io_prompt = f"## Sample Test cases: \n{self.get_sample_io_str(item)}\n"
-
-#             input_for_problem_planning = [
-#                 {
-#                     "role": "user",
-#                     "content": f"""Given a competitive programming problem and its understanding, generate a concrete planning to solve the problem.
-
-# # Problem:
-# {example_description}
-
-# # Planning:
-# {example_planning}
-
-# {algorithm_prompt}
-
-# ## Problem to be solved:
-# {problem_text}
-
-# ## Problem Understanding:
-# {self.sanitize_input(problem_understanding) if self.include_mode in ['both', 'understanding_only'] else ''}
-
-# {sample_io_prompt}
-
-# ## Planning:
-# [Your planning]
-# """
-#                 }
-#             ]
-
-#             logger.info(f"Prompt for problem planning (approach {t}):\n{input_for_problem_planning[0]['content']}")
-
-#             try:
-#                 planning, pr_tok_1, com_tok_1 = self.gpt_chat(
-#                     processed_input=input_for_problem_planning
-#                 )
-#                 pr_tok += pr_tok_1
-#                 com_tok += com_tok_1
-#                 item['api_calls'] += 1
-#                 logger.info(f"Planning response for approach {t}:\n{planning[:200]}...")
-#             except Exception as e:
-#                 logger.error(f"Error in generate_plans (planning) for approach {t}: {e}", exc_info=True)
-#                 continue
-
-#             input_for_planning_verification = [
-#                 {
-#                     "role": "user",
-#                     "content": f"""You are an expert evaluator for competitive programming plans. Assess a given plan based on problem-plan alignment and plan coherence. Provide explanations and scores, then compute an overall solvability score.
-
-# ## Evaluation Criteria:
-# 1. **Problem-Plan Alignment** (Score: 0.0 to 1.0):
-#    - Measures how well the plan addresses the problem's requirements, constraints, objectives, input/output formats, and edge cases.
-#    - 1.0: Perfect match—fully covers all aspects, including time/space complexity and pitfalls.
-#    - 0.5: Partial match—addresses core elements but misses some constraints or edge cases.
-#    - 0.0: No match—irrelevant or misunderstands the problem.
-
-# 2. **Plan Coherence** (Score: 0.0 to 1.0):
-#    - Measures logical consistency, feasibility, and completeness of the plan.
-#    - 1.0: Fully coherent—logically sound, clear, feasible in {self.language}, no gaps.
-#    - 0.5: Moderately coherent—logical flow but minor inconsistencies or gaps.
-#    - 0.0: Incoherent—illogical, infeasible, or riddled with errors.
-
-# 3. **Overall Solvability Score**:
-#    - Compute as (alignment score) * (coherence score) * 100, rounded to the nearest integer (0-100).
-
-# ## Input:
-# Problem Description: {problem_text}
-# Problem Understanding: {self.sanitize_input(problem_understanding) if self.include_mode in ['both', 'understanding_only'] else ''}
-# Proposed Plan: {self.sanitize_input(planning)}
-# Sample I/O: {sample_io_prompt}
-
-# ## Instructions:
-# Output in this exact structured text format with headings. Do not use JSON or extra text. Be objective and critical.
-
-# ## Alignment Explanation
-# [Your explanation]
-
-# ## Alignment Score
-# [Score as float]
-
-# ## Coherence Explanation
-# [Your explanation]
-
-# ## Coherence Score
-# [Score as float]
-
-# ## Overall Solvability
-# [Integer score]
-# """
-#                 }
-#             ]
-
-#             logger.info(f"Prompt for planning verification (approach {t}):\n{input_for_planning_verification[0]['content']}")
-
-#             verification_parsed = None
-#             pr_tok_1 = 0
-#             com_tok_1 = 0
-#             for attempt in range(self.max_attempts):
-#                 try:
-#                     verification_res, pr_tok_temp, com_tok_temp = self.gpt_chat(
-#                         processed_input=input_for_planning_verification
-#                     )
-#                     pr_tok_1 += pr_tok_temp
-#                     com_tok_1 += com_tok_temp
-#                     item['api_calls'] += 1
-#                     logger.info(f"Verification response for approach {t} (attempt {attempt + 1}):\n{verification_res[:200]}...")
-#                     verification_parsed = self.parse_structured_text(verification_res)
-#                     break
-#                 except Exception as e:
-#                     logger.error(f"Error in generate_plans (verification) on attempt {attempt + 1}: {e}", exc_info=True)
-#                     if attempt == self.max_attempts - 1:
-#                         logger.warning("Max attempts reached, skipping this plan.")
-
-#             pr_tok += pr_tok_1
-#             com_tok += com_tok_1
-#             if verification_parsed is None:
-#                 continue
-
-#             try:
-#                 alignment_score = float(verification_parsed.get('alignment_score', 0.0))
-#                 coherence_score = float(verification_parsed.get('coherence_score', 0.0))
-#                 confidence = int(alignment_score * coherence_score * 100)
-#                 logger.info(f"Verification scores for approach {t}: alignment={alignment_score}, coherence={coherence_score}, confidence={confidence}")
-#             except (ValueError, TypeError) as e:
-#                 logger.error(f"Error calculating confidence in generate_plans: {e}", exc_info=True)
-#                 confidence = 0
-
-#             plannings.append((planning, confidence, {
-#                 'description': example_description,
-#                 'code': example_code,
-#                 'planning': example_planning
-#             }))
-#             logger.info(f"Added planning for approach {t}: confidence={confidence}")
-
-#         plannings.sort(key=lambda x: x[1], reverse=True)
-#         logger.info(f"Sorted plannings: {[p[1] for p in plannings]}")
-
-#         return plannings, pr_tok, com_tok
-
-#     def generate_codes_from_plan(self, item, plan, algorithm_prompt, sample_io_prompt):
-#         if isinstance(self.data, (APPSDataset, CodeContestDataset, XCodeDataset)):
-#             std_input_prompt = "## Note: Strictly follow the input and output format. The input should be taken from Standard input and output should be given to standard output. If you are writing a function then after the function definition take input using `input()` function then call the function with specified parameters and finally print the output of the function. Do not add extra print statement otherwise it will failed the test cases."
-#         else:
-#             std_input_prompt = ""
-
-#         codes = []
-#         pr_tok = 0
-#         com_tok = 0
-
-#         problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
-#         pr_tok += pr_tok_u
-#         com_tok += com_tok_u
-#         logger.info(f"Problem understanding for code generation: {problem_understanding[:100]}...")
-
-#         problem_text = self.sanitize_input(self.data.get_prompt(item))
-#         context = ""
-#         if self.include_mode == 'both':
-#             context = f"## Problem to be solved:\n{problem_text}\n## Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-#         elif self.include_mode == 'problem_only':
-#             context = f"## Problem to be solved:\n{problem_text}"
-#         elif self.include_mode == 'understanding_only':
-#             context = f"## Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
-#         for i in range(self.number_of_code_per_plan):
-#             variation_prompt = ""  #if i == 0 else "Generate a different code variation that still strictly follows the plan."
-
-#             input_for_code_generation = [
-#                 {
-#                     "role": "user",
-#                     "content": f"""Given a competitive programming problem and its understanding, generate {self.language} code to solve the problem.
-
-# {self.sanitize_input(algorithm_prompt)}
-# {context}
-# ## Planning:
-# {self.sanitize_input(plan)}
-# {sample_io_prompt}
-# ## Let's think step by step.
-# {variation_prompt}
-
-# ----------------
-# Important:
-# {std_input_prompt}
-# ## Instructions:
-# Output only the {self.language} code to solve this problem. Do not add extra explanation or words.
-# """
-#                 }
-#             ]
-
-#             logger.info(f"Prompt for generate_codes_from_plan (code {i+1}):\n{input_for_code_generation[0]['content']}")
-
-#             try:
-#                 code_response, pr_tok_1, com_tok_1 = self.gpt_chat(
-#                     processed_input=input_for_code_generation
-#                 )
-#                 item['api_calls'] += 1
-#                 pr_tok += pr_tok_1
-#                 com_tok += com_tok_1
-#                 logger.info(f"Response for code {i+1}:\n{code_response[:200]}...")
-#                 code = self.parse_code(code_response)
-#                 codes.append(code)
-#             except Exception as e:
-#                 logger.error(f"Error in generate_codes_from_plan for code {i+1}: {e}", exc_info=True)
-#                 codes.append("")
-#                 continue
-
-#         evaluated = []
-#         for idx, code in enumerate(codes):
-#             if not code:
-#                 evaluated.append((code, 0.0, "No code generated", False))
-#                 logger.warning(f"No code generated for code {idx+1}")
-#                 continue
-#             try:
-#                 passed, test_log = self.data.evaluate_sample_io(item, code, self.language)
-#                 num_passed = test_log.count("passed in test case")
-#                 num_failed = test_log.count("failed in test case")
-#                 total = num_passed + num_failed
-#                 if total > 0:
-#                     passed_score = num_passed / total 
-#                 else:
-#                     passed_score = 1.0 if passed else 0.0
-#                 evaluated.append((code, passed_score, test_log, passed))
-#                 logger.info(f"Evaluated code {idx+1}: passed={passed}, score={passed_score}, test_log={test_log[:100]}...")
-#             except Exception as e:
-#                 logger.error(f"Error evaluating code {idx+1} in generate_codes_from_plan: {e}", exc_info=True)
-#                 evaluated.append((code, 0.0, f"Evaluation failed: {e}", False))
-
-#         evaluated.sort(key=lambda x: x[1], reverse=True)
-#         best_code = evaluated[0][0] if evaluated else ""
-#         flag = evaluated[0][3] if evaluated else False
-#         best_test_log = evaluated[0][2] if evaluated else ""
-#         logger.info(f"Best code selected: score={evaluated[0][1] if evaluated else 0.0}, passed={flag}")
-
-#         return best_code, flag, best_test_log, evaluated[0][1] if evaluated else 0.0, pr_tok, com_tok
-
-#     def plan_analysis(self, plan: str, code: str, test_log: str, problem: str, problem_understanding: str) -> dict:
-#         context = ""
-#         if self.include_mode == 'both':
-#             context = f"# Problem:\n{self.sanitize_input(problem)}\n# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-#         elif self.include_mode == 'problem_only':
-#             context = f"# Problem:\n{self.sanitize_input(problem)}"
-#         elif self.include_mode == 'understanding_only':
-#             context = f"# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
-#         input_prompt = [
-#             {
-#                 "role": "user",
-#                 "content": f"""Analyze a plan for solving a competitive programming problem, given the problem description, its understanding, and test log from code generated using the plan. Take a sample input from the test log and simulate the plan's execution step-by-step to pinpoint where the plan is failing based on the test log, and suggest specific improvements or modifications to fix those issues, considering edge cases and special cases from the problem understanding.
-
-# {context}
-
-# # Plan:
-# {self.sanitize_input(plan)}
-
-# # Current code implementation of the plan:
-# {self.sanitize_input(code)}
-
-# # Test Log:
-# {self.sanitize_input(test_log)}
-
-# ----------------
-# IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-# ## Simulation
-# [Your simulation]
-
-# ## Insights
-# [Your insights]
-# """
-#             }
-#         ]
-
-#         logger.info(f"Prompt for plan_analysis:\n{input_prompt[0]['content']}")
-
-#         simulation = 'No simulation provided'
-#         insights = 'No insights provided'
-#         pr_tok = 0
-#         com_tok = 0
-#         for attempt in range(self.max_attempts):
-#             try:
-#                 response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
-#                 pr_tok += pr_tok_temp
-#                 com_tok += com_tok_temp
-#                 logger.info(f"Response from plan_analysis (attempt {attempt + 1}):\n{response[:200]}...")
-#                 parsed = self.parse_structured_text(response)
-#                 simulation = parsed.get('simulation', 'No simulation provided')
-#                 insights = parsed.get('insights', 'No insights provided')
-#                 break
-#             except Exception as e:
-#                 logger.error(f"Error in plan_analysis on attempt {attempt + 1}: {e}", exc_info=True)
-#                 if attempt == self.max_attempts - 1:
-#                     logger.warning("Max attempts reached, using defaults.")
-
-#         logger.info(f"Plan analysis results: simulation={simulation[:50]}..., insights={insights[:50]}...")
-#         return {
-#             'simulation': simulation,
-#             'insights': insights,
-#             'pr_tok': pr_tok,
-#             'com_tok': com_tok
-#         }
-
-#     def code_analysis(self, code: str, test_log: str, problem: str, problem_understanding: str) -> dict:
-#         context = ""
-#         if self.include_mode == 'both':
-#             context = f"# Problem:\n{self.sanitize_input(problem)}\n# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-#         elif self.include_mode == 'problem_only':
-#             context = f"# Problem:\n{self.sanitize_input(problem)}"
-#         elif self.include_mode == 'understanding_only':
-#             context = f"# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
-#         input_prompt = [
-#             {
-#                 "role": "user",
-#                 "content": f"""Assess the generated code written in {self.language} programming language for a competitive programming problem, using the problem description, its understanding, and test log. Identify where the code is failing based on the test log, and suggest specific improvements or fixes to correct those issues, considering edge cases and special cases from the problem understanding.
-
-# {context}
-
-# # Code:
-# ```{self.language}
-# {self.sanitize_input(code)}
-# ```
-
-# # Test Log:
-# {self.sanitize_input(test_log)}
-
-# ----------------
-# IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep insights concise (<150 words).
-
-# ## Insights
-# [Your insights]
-# """
-#             }
-#         ]
-
-#         logger.info(f"Prompt for code_analysis:\n{input_prompt[0]['content']}")
-
-#         insights = 'No insights provided'
-#         pr_tok = 0
-#         com_tok = 0
-#         for attempt in range(self.max_attempts):
-#             try:
-#                 response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
-#                 pr_tok += pr_tok_temp
-#                 com_tok += com_tok_temp
-#                 logger.info(f"Response from code_analysis (attempt {attempt + 1}):\n{response[:200]}...")
-#                 parsed = self.parse_structured_text(response)
-#                 insights = parsed.get('insights', 'No insights provided')
-#                 break
-#             except Exception as e:
-#                 logger.error(f"Error in code_analysis on attempt {attempt + 1}: {e}", exc_info=True)
-#                 if attempt == self.max_attempts - 1:
-#                     logger.warning("Max attempts reached, using default.")
-
-#         logger.info(f"Code analysis insights: {insights[:50]}...")
-#         return {
-#             'insights': insights,
-#             'pr_tok': pr_tok,
-#             'com_tok': com_tok
-#         }
-
-#     def content_analysis(self, problem: str, problem_understanding: str, plan: str, code: str) -> dict:
-#         context = ""
-#         if self.include_mode == 'both':
-#             context = f"# Problem:\n{self.sanitize_input(problem)}\n# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-#         elif self.include_mode == 'problem_only':
-#             context = f"# Problem:\n{self.sanitize_input(problem)}"
-#         elif self.include_mode == 'understanding_only':
-#             context = f"# Problem Understanding:\n{self.sanitize_input(problem_understanding)}"
-
-#         input_prompt = [
-#             {
-#                 "role": "user",
-#                 "content": f"""Evaluate how effectively a plan and generated code, written in {self.language} programming language, align with the requirements of a competitive programming problem, given the problem description and its understanding. Assess the alignment between the problem (and its understanding) and the plan, and between the plan and the code. Identify any mismatches or issues in these alignments, considering edge cases and special cases from the problem understanding. Provide separate confidence scores (0.0 to 1.0) for the problem-plan alignment and plan-code alignment (1.0: perfect match; 0.0: no alignment), and suggest specific improvements for each if the alignment is not strong.
-
-# {context}
-
-# # Plan:
-# {self.sanitize_input(plan)}
-
-# # Code:
-# ```{self.language}
-# {self.sanitize_input(code)}
-# ```
-
-# ----------------
-# IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep insights concise (<150 words each).
-
-# ## Problem Plan Confidence
-# [Score as float]
-
-# ## Plan Code Confidence
-# [Score as float]
-
-# ## Problem Plan Insights
-# [Your insights]
-
-# ## Plan Code Insights
-# [Your insights]
-# """
-#             }
-#         ]
-
-#         logger.info(f"Prompt for content_analysis:\n{input_prompt[0]['content']}")
-
-#         problem_plan_confidence = 0.0
-#         plan_code_confidence = 0.0
-#         overall_confidence = 0.0
-#         problem_plan_insights = 'No insights provided'
-#         plan_code_insights = 'No insights provided'
-#         pr_tok = 0
-#         com_tok = 0
-#         for attempt in range(self.max_attempts):
-#             try:
-#                 response, pr_tok_temp, com_tok_temp = self.gpt_chat(processed_input=input_prompt)
-#                 pr_tok += pr_tok_temp
-#                 com_tok += com_tok_temp
-#                 logger.info(f"Response from content_analysis (attempt {attempt + 1}):\n{response[:200]}...")
-#                 parsed = self.parse_structured_text(response)
-#                 problem_plan_confidence = float(parsed.get('problem_plan_confidence', 0.0))
-#                 plan_code_confidence = float(parsed.get('plan_code_confidence', 0.0))
-#                 overall_confidence = problem_plan_confidence * plan_code_confidence
-#                 problem_plan_insights = parsed.get('problem_plan_insights', 'No insights provided')
-#                 plan_code_insights = parsed.get('plan_code_insights', 'No insights provided')
-#                 break
-#             except Exception as e:
-#                 logger.error(f"Error in content_analysis on attempt {attempt + 1}: {e}", exc_info=True)
-#                 if attempt == self.max_attempts - 1:
-#                     logger.warning("Max attempts reached, using defaults.")
-
-#         insights = f"## Problem-Plan Alignment Analysis: {problem_plan_insights}\n## Plan-Code Alignment Analysis: {plan_code_insights}"
-#         logger.info(f"Content analysis results: problem_plan_confidence={problem_plan_confidence}, plan_code_confidence={plan_code_confidence}")
-#         return {
-#             'problem_plan_confidence': max(0.0, min(problem_plan_confidence, 1.0)),
-#             'plan_code_confidence': max(0.0, min(plan_code_confidence, 1.0)),
-#             'confidence': max(0.0, min(overall_confidence, 1.0)),
-#             'problem_plan_insights': problem_plan_insights,
-#             'plan_code_insights': plan_code_insights,
-#             'insights': insights,
-#             'pr_tok': pr_tok,
-#             'com_tok': com_tok
-#         }
-
-#     def get_confidence(self, decision: str, analysis: dict, analysis_name: str) -> float:
-#         meaning = self.analysis_meaning.get(analysis_name, "")
-
-#         prompt = [
-#             {
-#                 "role": "user",
-#                 "content": f"""Given a {analysis_name} analysis. {meaning} Calculate the confidence score (0.0 to 1.0) for choosing to {decision}, where 1.0 means the analysis strongly supports the decision (e.g., insights indicate it's the best fix), and 0.0 means it does not support at all. Provide a brief explanation (50-100 words) of how the score was determined, referencing specific insights.
-
-# Insights:
-# {self.sanitize_input(analysis.get('insights', ''))}
-
-# =============
-# IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-# ## Confidence
-# [Score as float]
-
-# ## Reasoning
-# [Your reasoning]
-# """
-#             }
-#         ]
-
-#         logger.info(f"Prompt for get_confidence (decision: {decision}, analysis: {analysis_name}):\n{prompt[0]['content']}")
-
-#         score = 0.0
-#         for attempt in range(self.max_attempts):
-#             try:
-#                 response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
-#                 logger.info(f"Response from get_confidence (attempt {attempt + 1}):\n{response[:200]}...")
-#                 parsed = self.parse_structured_text(response)
-#                 score = float(parsed.get('confidence', 0.0))
-#                 reasoning = parsed.get('reasoning', 'No reasoning provided')
-#                 break
-#             except Exception as e:
-#                 logger.error(f"Error in get_confidence on attempt {attempt + 1}: {e}", exc_info=True)
-#                 if attempt == self.max_attempts - 1:
-#                     logger.warning("Max attempts reached, using default score 0.0.")
-
-#         logger.info(f"Confidence score for {decision}: {score}")
-#         return max(0.0, min(score, 1.0))
-
-#     def get_consistency(
-#         self,
-#         decision: str,
-#         analysis1: dict, name1: str,
-#         analysis2: dict, name2: str
-#     ) -> float:
-#         ins1 = self.sanitize_input(analysis1.get('insights', '').strip())
-#         ins2 = self.sanitize_input(analysis2.get('insights', '').strip())
-
-#         name1_meaning = self.analysis_meaning.get(name1, "")
-#         name2_meaning = self.analysis_meaning.get(name2, "")
-
-#         prompt = [
-#             {
-#                 "role": "user",
-#                 "content": f"""Given insights from two analyses: {name1} and {name2}. 
-# {name1} meaning: {name1_meaning}
-# {name2} meaning: {name2_meaning}
-# Calculate the consistency score (0.0 to 1.0) for choosing to {decision}, where 1.0 means the insights from both analyses are highly consistent and support the decision (e.g., similar issues and fixes suggested), and 0.0 means they are inconsistent or contradictory. Provide a brief explanation (50-100 words) of how the score was determined, referencing specific insights from both analyses.
-
-# {name1} insights:
-# {ins1}
-
-# {name2} insights:
-# {ins2}
-
-# IMPORTANT: Output in this exact structured text format with headings. Do not use JSON or extra text. Keep concise.
-
-# ## Consistency
-# [Score as float]
-
-# ## Reasoning
-# [Your reasoning]
-# """
-#             }
-#         ]
-
-#         logger.info(f"Prompt for get_consistency (decision: {decision}, analyses: {name1}, {name2}):\n{prompt[0]['content']}")
-
-#         score = 0.0
-#         for attempt in range(self.max_attempts):
-#             try:
-#                 response, pr_tok, com_tok = self.gpt_chat(processed_input=prompt)
-#                 logger.info(f"Response from get_consistency (attempt {attempt + 1}):\n{response[:200]}...")
-#                 parsed = self.parse_structured_text(response)
-#                 score = float(parsed.get('consistency', 0.0))
-#                 reasoning = parsed.get('reasoning', 'No reasoning provided')
-#                 break
-#             except Exception as e:
-#                 logger.error(f"Error in get_consistency on attempt {attempt + 1}: {e}", exc_info=True)
-#                 if attempt == self.max_attempts - 1:
-#                     logger.warning("Max attempts reached, using default score 0.0.")
-
-#         logger.info(f"Consistency score for {decision}: {score}")
-#         return max(0.0, min(score, 1.0))
-
-#     def collaborative_decision(self, plan: str, code: str, outcomes: str, item) -> str:
-#         try:
-#             problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
-#             problem_text = self.sanitize_input(self.data.get_prompt(item))
-
-#             A_plan = self.plan_analysis(plan, code, outcomes, problem_text, problem_understanding)
-#             A_code = self.code_analysis(code, outcomes, problem_text, problem_understanding)
-#             A_content = self.content_analysis(problem_text, problem_understanding, plan, code)
-
-#             decisions = ['update plan', 'update code only']
-#             scores = {}
-
-#             for d in decisions:
-#                 total = 0.0
-#                 for name, A_i in [('plan', A_plan), ('code', A_code), ('content', A_content)]:
-#                     w = self.trust_weights[name]
-#                     conf = self.get_confidence(d, A_i, name)
-#                     cons_prod = 1.0
-#                     for oname, A_j in [('plan', A_plan), ('code', A_code), ('content', A_content)]:
-#                         if oname != name:
-#                             cons_prod *= self.get_consistency(d, A_i, name, A_j, oname)
-#                     total += w * conf * cons_prod
-#                 scores[d] = total
-
-#             final_decision = max(scores, key=scores.get)
-#             logger.info(f"Collaborative decision: {final_decision}, scores={scores}")
-#             return final_decision
-#         except Exception as e:
-#             logger.error(f"Error in collaborative_decision: {e}", exc_info=True)
-#             return "update code only"
-
-#     def debug_plan(
-#         self,
-#         iteration: int,
-#         plan: str,
-#         error_analysis: Dict,
-#         problem: str,
-#         problem_understanding: str
-#     ):
-#         prev_logs = self.rt.historical_data.get(iteration - 1)
-#         rt_prompt = self.rt.generate_prompt_for_plan_update(
-#             iteration,
-#             error_analysis,
-#             problem,
-#             problem_understanding,
-#             plan,
-#             historical_logs=prev_logs
-#         )
-
-#         try:
-#             rt_response, pr_tok_rt, com_tok_rt = self.gpt_chat(
-#                 processed_input=[{'role': 'user', 'content': rt_prompt}]
-#             )
-#             logger.info(f"Response from debug_plan (iteration {iteration}):\n{rt_response[:200]}...")
-#             reasoning_trajectory = rt_response.strip()
-#         except Exception as e:
-#             logger.error(f"Error in debug_plan (gpt_chat): {e}", exc_info=True)
-#             reasoning_trajectory = "Error generating reasoning trajectory"
-
-#         context = ""
-#         if self.include_mode == 'both':
-#             context = f"# Problem: {self.sanitize_input(problem)}\n# Problem Understanding: {self.sanitize_input(problem_understanding)}"
-#         elif self.include_mode == 'problem_only':
-#             context = f"# Problem: {self.sanitize_input(problem)}"
-#         elif self.include_mode == 'understanding_only':
-#             context = f"# Problem Understanding: {self.sanitize_input(problem_understanding)}"
-
-#         update_prompt = [{
-#             'role': 'user',
-#             'content': (
-#                 f"""Given a competitive programming problem, its understanding, and a plan to solve it, but this plan has some troubles that need to be updated with insights. Please modify the plan accordingly.
-
-# {context}
-
-# # Current Planning:
-# {self.sanitize_input(plan)}
-
-# # Insights:
-# {self.sanitize_input(error_analysis['insights'])}
-
-# # Reasoning Trajectory:
-# {self.sanitize_input(reasoning_trajectory)}
-
-# # Instructions:
-# Output only the revised plan text. Do not add extra explanation or words.
-# """
-#             )
-#         }]
-
-#         logger.info(f"Prompt for debug_plan update (iteration {iteration}):\n{update_prompt[0]['content']}")
-
-#         try:
-#             updated, pr_tok_up, com_tok_up = self.gpt_chat(processed_input=update_prompt)
-#             logger.info(f"Updated plan response (iteration {iteration}):\n{updated[:200]}...")
-#             revised_plan = updated.strip()
-#         except Exception as e:
-#             logger.error(f"Error in debug_plan (update): {e}", exc_info=True)
-#             revised_plan = plan
-
-#         self.rt.update_historical_data(iteration, {
-#             'previous_plan': plan,
-#             'previous_success_rate': error_analysis.get('success_rate'),
-#             'previous_iteration': iteration - 1
-#         })
-#         logger.info(f"Debug plan completed for iteration {iteration}: revised_plan={revised_plan[:100]}...")
-#         return revised_plan, reasoning_trajectory
-
-#     def debug_code(
-#         self,
-#         iteration: int,
-#         plan: str,
-#         code: str,
-#         error_analysis: Dict,
-#         problem: str,
-#         problem_understanding: str
-#     ):
-#         prev_logs = self.rt.historical_data.get(iteration - 1)
-#         rt_prompt = self.rt.generate_prompt_for_code_update(
-#             iteration,
-#             error_analysis,
-#             problem,
-#             problem_understanding,
-#             plan,
-#             code,
-#             historical_logs=prev_logs
-#         )
-
-#         try:
-#             rt_response, pr_tok_rt, com_tok_rt = self.gpt_chat(
-#                 processed_input=[{'role': 'user', 'content': rt_prompt}]
-#             )
-#             logger.info(f"Response from debug_code (iteration {iteration}):\n{rt_response[:200]}...")
-#             reasoning_trajectory = rt_response.strip()
-#         except Exception as e:
-#             logger.error(f"Error in debug_code (gpt_chat): {e}", exc_info=True)
-#             reasoning_trajectory = "Error generating reasoning trajectory"
-
-#         context = ""
-#         if self.include_mode == 'both':
-#             context = f"# Problem: {self.sanitize_input(problem)}\n# Problem Understanding: {self.sanitize_input(problem_understanding)}"
-#         elif self.include_mode == 'problem_only':
-#             context = f"# Problem: {self.sanitize_input(problem)}"
-#         elif self.include_mode == 'understanding_only':
-#             context = f"# Problem Understanding: {self.sanitize_input(problem_understanding)}"
-
-#         code_prompt = [{
-#             'role': 'user',
-#             'content': (
-#                 f"""Given a competitive programming problem, its understanding, and generated {self.language} code to solve the problem, but the generated code cannot pass sample test cases. Improve your code to solve the problem correctly.
-
-# {context}
-
-# ## Planning:
-# {self.sanitize_input(plan)}
-
-# ## Code:
-# ```{self.language}
-# {self.sanitize_input(code)}
-# ```
-
-# ## Test Report:
-# {self.sanitize_input(error_analysis.get('test_results',''))}
-
-# ## Insights:
-# {self.sanitize_input(error_analysis['insights'])}
-
-# ## Reasoning Trajectory:
-# {self.sanitize_input(reasoning_trajectory)}
-
-# ## Instructions:
-# Output only the revised {self.language} code. Do not add extra explanation or words.
-# """
-#             )
-#         }]
-
-#         logger.info(f"Prompt for debug_code update (iteration {iteration}):\n{code_prompt[0]['content']}")
-
-#         try:
-#             updated, pr_tok_up, com_tok_up = self.gpt_chat(processed_input=code_prompt)
-#             logger.info(f"Updated code response (iteration {iteration}):\n{updated[:200]}...")
-#             revised_code = self.parse_code(updated)
-#         except Exception as e:
-#             logger.error(f"Error in debug_code (update): {e}", exc_info=True)
-#             revised_code = code
-
-#         self.rt.update_historical_data(iteration, {
-#             'previous_code': code,
-#             'previous_success_rate': error_analysis.get('success_rate'),
-#             'previous_iteration': iteration - 1
-#         })
-#         logger.info(f"Debug code completed for iteration {iteration}: revised_code={revised_code[:100]}...")
-#         return revised_code, reasoning_trajectory
-
-#     def _inner_run(self, item):
-#         pr_tok = 0
-#         com_tok = 0
-
-#         try:
-#             plannings, pr_tok_p, com_tok_p = self.generate_plans(item)
-#             pr_tok += pr_tok_p
-#             com_tok += com_tok_p
-#             logger.info(f"Generated plannings: {len(plannings)} plans")
-#         except Exception as e:
-#             logger.error(f"Error in _inner_run (generate_plans): {e}", exc_info=True)
-#             plannings = []
-
-#         selected_plannings = plannings[:self.top_plan]
-#         logger.info(f"Selected top {self.top_plan} plannings")
-
-#         best_code = ""
-#         flag = False
-#         test_log = ""
-
-#         for plan_idx, planning_with_ex in enumerate(selected_plannings, 1):
-#             plan, confidence, example = planning_with_ex
-#             approach_name = example.get('description', '') if 'description' in example else ''
-#             approach_tutorial = example.get('planning', '') if 'planning' in example else ''
-#             algorithm_prompt = f"## Relevant Approach: {self.sanitize_input(approach_name)}\n{self.sanitize_input(approach_tutorial)}"
-#             sample_io_prompt = f"## Sample Test cases: \n{self.get_sample_io_str(item)}\n"
-#             if isinstance(self.data, (APPSDataset, CodeContestDataset, XCodeDataset)):
-#                 std_input_prompt = "## Note: Strictly follow the input and output format. The input should be taken from Standard input and output should be given to standard output. If you are writing a function then after the function definition take input using `input()` function then call the function with specified parameters and finally print the output of the function. Do not add extra print statement otherwise it will failed the test cases."
-#             else:
-#                 std_input_prompt = ""
-
-#             try:
-#                 best_code, flag, test_log, score, pr_tok_c, com_tok_c = self.generate_codes_from_plan(item, plan, algorithm_prompt, sample_io_prompt)
-#                 pr_tok += pr_tok_c
-#                 com_tok += com_tok_c
-#                 logger.info(f"Generated code for plan {plan_idx}: score={score}, passed={flag}")
-#             except Exception as e:
-#                 logger.error(f"Error in _inner_run (generate_codes_from_plan) for plan {plan_idx}: {e}", exc_info=True)
-#                 continue
-
-#             if flag:
-#                 logger.info(f"Plan {plan_idx} passed all tests, returning best code")
-#                 return best_code, pr_tok, com_tok
-
-#             for i in range(1, self.t + 1):
-#                 try:
-#                     problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
-#                     pr_tok += pr_tok_u
-#                     com_tok += com_tok_u
-#                     logger.info(f"Problem understanding for iteration {i}: {problem_understanding[:100]}...")
-#                 except Exception as e:
-#                     logger.error(f"Error in _inner_run (get_problem_understanding) iteration {i}: {e}", exc_info=True)
-#                     problem_understanding = ""
-
-#                 try:
-#                     decision = self.collaborative_decision(plan, best_code, test_log, item)
-#                     logger.info(f"Decision for iteration {i}: {decision}")
-#                 except Exception as e:
-#                     logger.error(f"Error in _inner_run (collaborative_decision) iteration {i}: {e}", exc_info=True)
-#                     decision = "update code only"
-
-#                 if decision == 'update plan':
-#                     try:
-#                         A_plan = self.plan_analysis(plan, best_code, test_log, self.data.get_prompt(item), problem_understanding)
-#                         plan, reasoning_trajectory = self.debug_plan(i + 1, plan, {
-#                             'insights': A_plan['insights'],
-#                             'test_results': test_log,
-#                             'success_rate': score,
-#                         }, self.data.get_prompt(item), problem_understanding)
-
-#                         code, flag, test_log, score, p_c2, c_c2 = self.generate_codes_from_plan(
-#                             item, plan, algorithm_prompt="", sample_io_prompt=sample_io_prompt
-#                         )
-#                         pr_tok += p_c2
-#                         com_tok += c_c2
-#                         best_code = code
-#                         logger.info(f"Updated plan and code for iteration {i}: score={score}, passed={flag}")
-#                     except Exception as e:
-#                         logger.error(f"Error in _inner_run (update plan) iteration {i}: {e}", exc_info=True)
-#                         continue
-#                 else:
-#                     try:
-#                         A_code = self.code_analysis(best_code, test_log, self.data.get_prompt(item), problem_understanding)
-#                         best_code, reasoning_trajectory = self.debug_code(i + 1, plan, best_code, {
-#                             'insights': A_code['insights'],
-#                             'test_results': test_log,
-#                             'success_rate': score,
-#                         }, self.data.get_prompt(item), problem_understanding)
-#                         logger.info(f"Updated code for iteration {i}: {best_code[:100]}...")
-#                     except Exception as e:
-#                         logger.error(f"Error in _inner_run (update code) iteration {i}: {e}", exc_info=True)
-#                         continue
-
-#                 try:
-#                     flag, test_log = self.data.evaluate_sample_io(item, best_code, self.language)
-#                     logger.info(f"Evaluated code for iteration {i}: passed={flag}, test_log={test_log[:100]}...")
-#                 except Exception as e:
-#                     logger.error(f"Error in _inner_run (evaluate_sample_io) iteration {i}: {e}", exc_info=True)
-#                     flag, test_log = False, f"Evaluation failed: {e}"
-
-#                 if flag:
-#                     logger.info(f"Code passed all tests in iteration {i}, returning best code")
-#                     return best_code, pr_tok, com_tok
-
-#         logger.info(f"No passing code found, returning best code: {best_code[:100]}...")
-#         return best_code, pr_tok, com_tok
-
-#     def run_single_pass(self, item: dict):
-#         max_retries = 3
-#         for attempt in range(1, max_retries + 1):
-#             try:
-#                 logger.info(f"Starting run_single_pass attempt {attempt} with item: {item}")
-#                 result = self._inner_run(item)
-#                 logger.info(f"run_single_pass completed successfully: result={result[0][:100]}...")
-#                 return result
-#             except Exception as e:
-#                 logger.error(f"[run_single_pass] Attempt {attempt} caught exception: {e}", exc_info=True)
-#                 logger.info(f"[run_single_pass] Item: {item}")
-#                 if attempt == max_retries:
-#                     logger.error(f"[run_single_pass] All {max_retries} attempts failed. Returning fallback ('',0,0).")
-#                     return "", 0, 0
+                    raise e
