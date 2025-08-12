@@ -65,3 +65,4 @@ class PlanOutput(PydanticBaseModel):
     code: str = Field(..., description="Best code for the plan")
     llm_score: int = Field(..., description="LLM-verified solvability score")
     code_score: float = Field(..., ge=0.0, le=1.0, description="Code evaluation score")
+    test_log: str = Field(default="", description="Test log from evaluation")

@@ -413,7 +413,7 @@ class MapCoder(BaseStrategy):
                     print(f"[run_single_pass] ERROR: All {max_retries} attempts failed due to XML parsing. Returning fallback ('',0,0).")
                     return "", 0, 0
             except Exception as e:
-                raise e
+                
                 # Nếu có lỗi khác không phải ParseError, cũng bẫy lại để retry
                 print(f"[run_single_pass] Attempt {attempt} caught unexpected exception: {e}. Retrying...")
                 if attempt == max_retries:

@@ -1,5 +1,4 @@
 from typing import List, Optional, Dict, Tuple
-
 import tiktoken
 import os
 import json
@@ -9,9 +8,8 @@ import time
 import random
 from datetime import datetime
 from copy import deepcopy
-
-from .Base import BaseStrategy
-from models.Base import BaseModel
+from .Base import BaseStrategy  # Assuming this is in your project structure
+from models.Base import BaseModel  # Adjust paths as needed
 from datasets.Dataset import Dataset
 from datasets.APPSDataset import APPSDataset
 from datasets.MBPPDataset import MBPPDataset
@@ -21,7 +19,9 @@ from datasets.CodeContestDataset import CodeContestDataset
 from results.Results import Results
 from evaluations.func_evaluate import evaluate_io
 import numpy as np
-from forms import *
+from forms import *  # Assuming this imports your form models like PlanOutput, etc.
+from multi_thread import multi_thread_task_dict
+
 class AnalysisReflection:
     def __init__(self):
         self.historical_data = {}  # Dictionary to store iteration data
@@ -35,10 +35,10 @@ class AnalysisReflection:
         previous_reflection = historical_logs.get('analysis_reflection', 'No previous analysis reflection available')
         insights = error_analysis.get('insights', '')
         success_rate = error_analysis.get('success_rate', 0.0)
-        
-        # Base prompt structure
-        prompt = f"""You are a debugging assistant for a competitive programming problem. Your task is to provide a conversational analysis reflection to guide plan refinement at iteration {iteration}. The reflection should evolve from the previous reflection (R(t-1)) and incorporate new insights from plan analysis.
-
+      
+        # Updated prompt structure as per your instructions
+        prompt = f"""You are a debugging assistant for a competitive programming problem. Your task is to provide an analysis reflection to guide plan refinement at iteration {iteration}.
+You are given a problem, and understanding about that problem, also a plan to solve that problem, but it fails to solve the problem, manifested in failed test cases in the test log. The plan went through the Planning Analysis Agent to get the insights. Based on the previous reflection you gave, and the new insights you have, please evolve the reflection by addressing the new insights. Provide a reflection to guide the next plan update.
 Problem: {problem}
 Problem Understanding: {problem_understanding}
 Current Plan: {plan}
@@ -46,44 +46,15 @@ Test Log: {error_analysis.get('test_results', '')}
 Insights from Plan Analysis: {insights}
 Previous Analysis Reflection (R(t-1)): {previous_reflection}
 Success Rate from previous iteration t-1: {success_rate:.2f}%
-
-Evolve the reflection from R(t-1) by addressing the new insights. Provide a reflection to guide the next plan update.
 """
         return prompt
 
-    def generate_prompt_for_code_reflection(self, iteration: int, error_analysis: Dict, problem: str, problem_understanding: str, plan: str, code: str, historical_logs: Dict) -> str:
-        """Generate a conversational prompt for code debugging, evolving from R(t-1)."""
-        previous_reflection = historical_logs.get('analysis_reflection', 'No previous analysis reflection available')
-        insights = error_analysis.get('insights', '')
-        success_rate = error_analysis.get('success_rate', 0.0)
-        
-        # Base prompt structure
-        prompt = f"""You are a debugging assistant for a competitive programming problem. Your task is to provide a conversational analysis reflection to guide code refinement at iteration {iteration}. The reflection should evolve from the previous reflection (R(t-1)) and incorporate new insights from code analysis.
-
-Problem: {problem}
-Problem Understanding: {problem_understanding}
-Current Plan: {plan}
-Code:
-```python
-{code}
-```
-Test Log: {error_analysis.get('test_results', '')}
-Insights from Code Analysis: {insights}
-Previous Analysis Reflection (R(t-1)): {previous_reflection}
-Success Rate: {success_rate:.2f}%
-
-Evolve the reflection from R(t-1) by addressing the new insights. Provide a reflection to guide the next code update.
-"""
-        print("Evolution prompt: ", prompt)
-        return prompt
-
-
-class CoEvolvev4(BaseStrategy):
+class CoEvolvev5(BaseStrategy):
     def __init__(
         self,
         k: int = 1,
         t: int = 5,
-        max_attempts: int = 3,
+        max_attempts: int = 1,
         *args,
         **kwargs
     ):
@@ -106,7 +77,6 @@ class CoEvolvev4(BaseStrategy):
         self.max_attempts = max_attempts
         self.verbose = True
         self.rt = AnalysisReflection()  # Initialize AnalysisReflection for debugging guidance
-
     def _extract_json_string(self, text: str) -> Optional[str]:
         m = re.search(r'```json\s*({[\s\S]*?})\s*```', text, re.DOTALL)
         if not m:
@@ -114,12 +84,10 @@ class CoEvolvev4(BaseStrategy):
         if not m:
             m = re.search(r'({[\s\S]*})', text, re.DOTALL)
         return m.group(1) if m else None
-
     def _fix_invalid_escapes(self, json_str: str) -> str:
         json_str = json_str.replace('\b', '\\b').replace('\f', '\\f').replace('\r', '\\r').replace('\t', '\\t')
         json_str = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', json_str)
         return json_str
-
     def parse_structured_output(self, response: str, model: BaseModel) -> BaseModel:
         if self.verbose:
             print("Step: Parsing structured output")
@@ -129,7 +97,8 @@ class CoEvolvev4(BaseStrategy):
         wrapping_prompt = [
             {
                 "role": "user",
-                "content": f"""You are an expert in JSON structuring. Your task is to take a free-form response and convert it into structured JSON matching the provided schema. Extract relevant information from the response and ensure the output is valid JSON.
+                "content": f"""You are an expert in JSON structuring. Your task is to take a free-form response and convert it into structured JSON matching the provided schema. 
+                Extract relevant information from the response and ensure the output is valid JSON. Please try to keep as much of the original content of the response as possible, even the layout.
 Free-form response:
 {response}
 Target JSON schema:
@@ -189,7 +158,6 @@ Example output:
         except Exception as e:
             print(f"Invalid output: Model instantiation error: {e}\nParsed data dict: {data}")
             return model()
-
     def parse_code(self, response: str) -> str:
         if self.verbose:
             print("Step: Parsing code")
@@ -212,7 +180,6 @@ Example output:
             print("Step: Code parsing successful")
             print(f"Parsed code: {parsed_code[:100]}...")
         return parsed_code
-
     def get_sample_io_str(self, item) -> str:
         if self.verbose:
             print("Step: Getting sample I/O string")
@@ -231,7 +198,6 @@ Example output:
             print("Step: Sample I/O retrieved")
             print(f"Sample I/O: {sample_io}...")
         return sample_io
-
     def compute_score(self, test_log: str) -> float:
         print("Test Log:", test_log)
         if self.verbose:
@@ -245,7 +211,6 @@ Example output:
             print("Step: Score computed")
             print(f"Score: {score} (passed: {num_passed}, failed: {num_failed})")
         return score
-
     def get_problem_understanding(self, item) -> Tuple[str, int, int]:
         if self.verbose:
             print("Step: Generating problem understanding")
@@ -254,7 +219,7 @@ Example output:
             {
                 "role": "user",
                 "content": f"""You are an expert in competitive programming. Your task is to:
-- Analyze a problem description and provide a concise understanding of the problem, including its requirements, constraints, objectives, and potential edge cases or special cases. 
+- Analyze a problem description and provide a concise understanding of the problem, including its requirements, constraints, objectives, and potential edge cases or special cases.
 - Identify edge cases (e.g., boundary conditions, invalid inputs, or extreme scenarios) and special cases (e.g., unique input patterns or problem-specific conditions) that need attention, and provide examples of these cases beyond the provided sample I/O.
 - Also, for each sample test case provided, explain step-by-step how the input is processed according to the problem to produce the expected output.
 # Problem:
@@ -276,7 +241,6 @@ Example output:
         except Exception as e:
             print(f"Error in get_problem_understanding: {e}")
             return "", 0, 0
-
     def generate_code_from_plan(self, item, planning: str, problem_text: str, sample_io_prompt: str, previous_codes: str = "", understanding: str = "") -> Tuple[str, float, str, int, int]:
         if self.verbose:
             print("Step: Generating code from plan")
@@ -359,8 +323,7 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
             print("Step: Best code selected")
             print(f"Best code: {best_code[:100]}..., Score: {max_score}")
         return best_code, max_score, best_test_log, pr_tok, com_tok
-
-    def generate_plans(self, item, problem_understanding) -> Tuple[List[PlanOutput], int, int]:
+    def generate_plans(self, item) -> Tuple[List[PlanOutput], int, int]:
         if self.verbose:
             print("Step: Starting plan generation")
         plans = []
@@ -369,6 +332,7 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
         previous_approaches = ""
         problem_text = self.data.get_prompt(item)
         sample_io_prompt = self.get_sample_io_str(item)
+        problem_understanding, pr_u, com_u = self.get_problem_understanding(item)
         pr_tok += pr_u
         com_tok += com_u
         max_plans = self.k
@@ -390,6 +354,7 @@ Recall one relevant and distinct problem (different from the problem mentioned a
 2. generate {self.language} code step by step to solve that problem using the approach
 3. generate a planning to solve that problem using the approach
 Provide the response in a clear, readable format, optionally using markdown for sections.
+IMPORTANT: Structure your response with markdown sections for each field: ## approach_name, ## tutorial, ## problem_description, ## code, ## planning. Provide content under each section.
 """
                 }
             ]
@@ -433,6 +398,7 @@ Provide the response in a clear, readable format, optionally using markdown for 
                         f"# Example Plan (for reference):\n{example_planning}\n\n"
                         f"# Target Problem:\n{problem_text}\n\n"
                         f"## Sample Test Cases:\n{sample_io_prompt}"
+                        "IMPORTANT: You should give only the planning to solve the problem. Do not add extra explanation or words."
                     ),
                 },
             ]
@@ -456,6 +422,7 @@ Problem Description: {problem_text}
 Proposed Plan: {planning}
 Sample I/O: {sample_io_prompt}
 Provide the response in a clear, readable format, optionally using markdown.
+IMPORTANT: Structure your response with markdown sections for each field: ## alignment_explanation, ## alignment_score, ## coherence_explanation, ## coherence_score, ## overall_solvability. Provide content under each section.
 """
                 }
             ]
@@ -486,7 +453,7 @@ Provide the response in a clear, readable format, optionally using markdown.
                 print(f"LLM score: {llm_score}")
         if len(plans) < self.k:
             print(f"Warning: Only {len(plans)}/{self.k} valid plans generated, attempting one more generation")
-            additional_plans, pr_tok_add, com_tok_add = self.generate_plans(item, understanding)
+            additional_plans, pr_tok_add, com_tok_add = self.generate_plans(item)
             pr_tok += pr_tok_add
             com_tok += com_tok_add
             plans.extend(additional_plans)
@@ -516,465 +483,145 @@ Provide the response in a clear, readable format, optionally using markdown.
             print("Step: Best plan and code selected")
             print(f"Best plan LLM score: {best_llm_score}, Best code score: {code_score}")
         return result, pr_tok, com_tok
-
-    
-    #### merge analysis
-    def merged_analysis(self, plan: str, code: str, test_log: str, problem: str, problem_understanding: str) -> Dict:
-        """
-        Performs plan, code, and content analysis in a single API call.
-        Returns a dictionary containing all three analysis results.
-        """
-        # Input validation
-        if not all([plan, code, test_log, problem, problem_understanding]):
-            raise ValueError("All inputs must be non-empty")
-    
+    def plan_analysis(self, plan: str, code: str, test_log: str, problem: str, problem_understanding: str) -> PlanAnalysisOutput:
         if self.verbose:
-            print("Step: Performing merged analysis (plan + code + content)")
-            print(f"Plan (truncated): {plan[:100]}...")
-            print(f"Code (truncated): {code[:100]}...")
-    
+            print("Step: Performing plan analysis")
+            print(f"Plan: {plan[:100]}...")
+        schema = PlanAnalysisOutput.model_json_schema()
         input_prompt = [
             {
                 "role": "user",
                 "content": (
-                    "You are an expert competitive programming analyst with expertise in debugging, logical reasoning, and solution evaluation. "
-                    "Your task is to perform three types of analysis on a competitive programming solution: Plan Analysis, Code Analysis, and Content Analysis. "
-                    "Provide comprehensive insights for each analysis type.\n\n"
-                    
+                    "You are an expert competitive-programming plan analyst with extensive experience in debugging and logical reasoning. "
+                    "Given a proposed solution plan, the problem description, your understanding of the problem, and a test log showing failures, "
+                    "Your primary task is to perform a detailed step-by-step simulation of the proposed solution plan using the specific input data from the failing test case(s) in the test log. "
+                    "For each step of the plan, trace the logic using the test case input, identify where the simulation produces results that diverge from the expected output in the test log, and localize the specific logical flaws, incorrect assumptions, or mismatches in the plan. "
+                    "Your mission is to pinpoint errors in the plan and provide actionable insights for refinement to align with the problem requirements."
+                    "Structure your response with two sections: "
+                    "1. Simulation: Provide a detailed step-by-step simulation of the plan on the failing test cases, highlighting divergences."
+                    "2. Insight: Summarize the identified flaws and provide actionable insights for plan refinement."
+                    f"Problem Description:\n{problem}\n\n"
+                    f"Problem Understanding:\n{problem_understanding}\n\n"
+                    f"Proposed Plan:\n{plan}\n\n"
+                    f"Test Log (failing input/output):\n{test_log}"
+                ),
+            },
+        ]
+        pr_tok = 0
+        com_tok = 0
+        for attempt in range(self.max_attempts):
+            if self.verbose:
+                print(f"Step: Plan analysis attempt {attempt + 1}")
+            try:
+                response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_prompt)
+                pr_tok += pr_tok_temp
+                com_tok += com_tok_temp
+                parsed = self.parse_structured_output(response, PlanAnalysisOutput)
+                parsed.pr_tok = pr_tok
+                parsed.com_tok = com_tok
+                if self.verbose:
+                    print("Step: Plan analysis successful")
+                    print(f"Insights: {parsed.insights}...")
+                return parsed
+            except Exception as e:
+                print(f"Error in plan_analysis attempt {attempt + 1}: {e}")
+                if attempt == self.max_attempts - 1:
+                    return PlanAnalysisOutput(pr_tok=pr_tok, com_tok=com_tok)
+    def code_analysis(self, code: str, test_log: str, problem: str, problem_understanding: str) -> CodeAnalysisOutput:
+        if self.verbose:
+            print("Step: Performing code analysis")
+            print(f"Code: {code[:100]}...")
+        schema = CodeAnalysisOutput.model_json_schema()
+        input_prompt = [
+            {
+                "role": "user",
+                "content": (
+                    "You are an expert competitive-programming code analyst. "
+                    "Your task is to simulate the provided implementation on a failing test case, "
+                    "executing it line-by-line to pinpoint and localize any specific errors, mismatches, "
+                    "or logical flaws in the code. "
+                    "Provide a detailed analysis in a clear, readable format, optionally using markdown."
+                    "Structure your response with two sections: "
+                    "1. Simulation: Provide a detailed line-by-line simulation of the code on the failing test cases, highlighting errors."
+                    "2. Insight: Summarize the identified flaws and provide actionable insights for code refinement."
+                    f"Problem Description:\n{problem}\n\n"
+                    f"Problem Understanding:\n{problem_understanding}\n\n"
+                    f"Code Implementation ({self.language}):\n"
+                    f"```{self.language}\n{code}\n```\n\n"
+                    f"Test Log (failing input/output):\n{test_log}"
+                ),
+            },
+        ]
+        pr_tok = 0
+        com_tok = 0
+        for attempt in range(self.max_attempts):
+            if self.verbose:
+                print(f"Step: Code analysis attempt {attempt + 1}")
+            try:
+                response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_prompt)
+                pr_tok += pr_tok_temp
+                com_tok += com_tok_temp
+                parsed = self.parse_structured_output(response, CodeAnalysisOutput)
+                parsed.pr_tok = pr_tok
+                parsed.com_tok = com_tok
+                if self.verbose:
+                    print("Step: Code analysis successful")
+                    print(f"Insights: {parsed.insights[:100]}...")
+                return parsed
+            except Exception as e:
+                print(f"Error in code_analysis attempt {attempt + 1}: {e}")
+                if attempt == self.max_attempts - 1:
+                    return CodeAnalysisOutput(pr_tok=pr_tok, com_tok=com_tok)
+    def content_analysis(self, problem: str, problem_understanding: str, plan: str, code: str) -> ContentAnalysisOutput:
+        if self.verbose:
+            print("Step: Performing content analysis")
+        schema = ContentAnalysisOutput.model_json_schema()
+        input_prompt = [
+            {
+                "role": "user",
+                "content": (
+                    "You are a senior competitive-programming evaluator. "
+                    "Focus ONLY on how well the proposed solution plan and its implementation "
+                    "align with the problem requirements and with each other. "
+                    "Identify any mismatches, omissions, or unnecessary steps, "
+                    "and provide a single concise insight summarizing the alignment issues and suggestions to improve alignment between problem, plan, and code. "
+                    "Provide the analysis in a clear, readable format, optionally using markdown."
                     f"Problem Description:\n{problem}\n\n"
                     f"Problem Understanding:\n{problem_understanding}\n\n"
                     f"Proposed Plan:\n{plan}\n\n"
                     f"Code Implementation ({self.language}):\n"
                     f"```{self.language}\n{code}\n```\n\n"
-                    f"Test Log (failing input/output):\n{test_log}\n\n"
-                    
-                    "Please provide your analysis in the following structure:\n\n"
-                    
-                    "## Plan Analysis\n"
-                    "Perform a detailed step-by-step simulation of the proposed solution plan using the specific input data from the failing test case(s). "
-                    "For each step of the plan, trace the logic using the test case input, identify where the simulation produces results that diverge from the expected output, "
-                    "and localize the specific logical flaws, incorrect assumptions, or mismatches in the plan.\n"
-                    "- **Simulation Walkthrough**: Step-by-step trace of the plan's execution on failing test cases\n"
-                    "- **Error Localization**: Specific issues in the plan causing divergence from expected behavior\n"
-                    "- **Plan Insights**: Concrete recommendations to fix identified issues and improve the plan\n\n"
-                    
-                    "## Code Analysis\n"
-                    "Perform a detailed line-by-line simulation of the code implementation using the specific input data from the failing test case(s). "
-                    "Trace variable states, control flow, and computations at each line, identifying where the code produces results that diverge from the expected output.\n"
-                    "- **Code Simulation Walkthrough**: Line-by-line trace of code execution on failing test cases\n"
-                    "- **Code Error Localization**: Specific issues in the code with precise line number references\n"
-                    "- **Code Insights**: Concrete recommendations to fix identified issues in the code\n\n"
-                    
-                    "## Content Analysis\n"
-                    "Evaluate how well the proposed plan and code implementation align with the problem requirements and each other. "
-                    "Perform a high-level conceptual simulation identifying mismatches, omissions, or unnecessary elements.\n"
-                    "- **Plan-Problem Alignment**: How well the plan addresses problem requirements\n"
-                    "- **Code-Plan Alignment**: How faithfully the code implements the plan\n"
-                    "- **Content Insights**: Recommendations to improve alignment between plan, code, and problem requirements\n\n"
-                    
-                    "Provide your response in clear, readable markdown format with the above structure."
+                    "IMPORTANT: Structure your response with markdown sections for each field: ## plan_code_insights. Provide content under each section."
                 ),
             },
         ]
-    
         pr_tok = 0
         com_tok = 0
         for attempt in range(self.max_attempts):
             if self.verbose:
-                print(f"Step: Merged analysis attempt {attempt + 1}/{self.max_attempts}")
+                print(f"Step: Content analysis attempt {attempt + 1}")
             try:
                 response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_prompt)
-                print(f"Merged analysis : {response}")
                 pr_tok += pr_tok_temp
                 com_tok += com_tok_temp
-                
-                # Parse the response to extract insights for each analysis type
-                analysis_result = self._parse_merged_analysis_response(response)
-                analysis_result['pr_tok'] = pr_tok
-                analysis_result['com_tok'] = com_tok
-                
+                parsed = self.parse_structured_output(response, ContentAnalysisOutput)
+                parsed.pr_tok = pr_tok
+                parsed.com_tok = com_tok
                 if self.verbose:
-                    print("Step: Merged analysis successful")
-                    print(f"Plan insights: {analysis_result['plan_analysis']['insights']}...")
-                    print(f"Code insights: {analysis_result['code_analysis']['insights']}...")
-                    print(f"Content insights: {analysis_result['content_analysis']['insights']}...")
-                
-                return analysis_result
-                
+                    print("Step: Content analysis successful")
+                    print(f"Insights: {parsed.plan_code_insights[:100]}...")
+                return parsed
             except Exception as e:
-                if self.verbose:
-                    print(f"Error in merged_analysis attempt {attempt + 1}: {str(e)}")
+                print(f"Error in content_analysis attempt {attempt + 1}: {e}")
                 if attempt == self.max_attempts - 1:
-                    if self.verbose:
-                        print("Step: Max attempts reached, returning default output")
-                    return {
-                        'plan_analysis': {'insights': 'Analysis failed'},
-                        'code_analysis': {'insights': 'Analysis failed'},
-                        'content_analysis': {'insights': 'Analysis failed'},
-                        'pr_tok': pr_tok,
-                        'com_tok': com_tok
-                    }
-
-    def _parse_merged_analysis_response(self, response: str) -> Dict:
-        """
-        Parse the merged analysis response to extract insights for each analysis type.
-        """
-        if self.verbose:
-            print("Step: Parsing merged analysis response")
-        
-        # Initialize default structure
-        result = {
-            'plan_analysis': {'insights': ''},
-            'code_analysis': {'insights': ''},
-            'content_analysis': {'insights': ''}
-        }
-        
-        try:
-            # Split response by main sections
-            sections = response.split('##')
-            
-            for section in sections:
-                section = section.strip()
-                if not section:
-                    continue
-                    
-                if section.lower().startswith('plan analysis'):
-                    # Extract plan insights from the section
-                    insights = self._extract_insights_from_section(section, 'Plan Insights')
-                    result['plan_analysis']['insights'] = insights
-                    
-                elif section.lower().startswith('code analysis'):
-                    # Extract code insights from the section
-                    insights = self._extract_insights_from_section(section, 'Code Insights')
-                    result['code_analysis']['insights'] = insights
-                    
-                elif section.lower().startswith('content analysis'):
-                    # Extract content insights from the section
-                    insights = self._extract_insights_from_section(section, 'Content Insights')
-                    result['content_analysis']['insights'] = insights
-        
-        except Exception as e:
-            if self.verbose:
-                print(f"Error parsing merged analysis response: {e}")
-            # Return the full response as insights for each analysis if parsing fails
-            result['plan_analysis']['insights'] = response
-            result['code_analysis']['insights'] = response
-            result['content_analysis']['insights'] = response
-        
-        return result
-
-    def _extract_insights_from_section(self, section: str, insights_header: str) -> str:
-        """
-        Extract insights from a specific section of the analysis.
-        """
-        try:
-            # Look for the insights subsection
-            lines = section.split('\n')
-            insights_started = False
-            insights_lines = []
-            
-            for line in lines:
-                if insights_header.lower() in line.lower() or 'insights' in line.lower():
-                    insights_started = True
-                    continue
-                
-                if insights_started:
-                    # Stop if we hit another major subsection (starts with **)
-                    if line.strip().startswith('**') and line.strip().endswith('**'):
-                        # Check if this is a new major subsection, not part of insights
-                        if any(keyword in line.lower() for keyword in ['simulation', 'walkthrough', 'localization', 'alignment']):
-                            break
-                    insights_lines.append(line)
-            
-            if insights_lines:
-                return '\n'.join(insights_lines).strip()
-            else:
-                # If no specific insights section found, return the entire section
-                return section.strip()
-                
-        except Exception as e:
-            if self.verbose:
-                print(f"Error extracting insights from section: {e}")
-            return section.strip()
-    
-    def get_all_confidence(self, decisions: List[str], analyses: Dict[str, Dict]) -> Dict[str, Dict[str, ConfidenceOutput]]:
-        """
-        Compute confidence scores for all decisions across all analysis types in a single API call.
-        Returns a dictionary mapping decisions to analysis types and their ConfidenceOutput.
-        """
-        if self.verbose:
-            print("Step: Computing all confidence scores in a single API call")
-        
-        agent_descriptions = {
-            "plan": "Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
-            "code": "Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
-            "content": "Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
-        }
-        
-        analysis_meanings = {
-            "plan": "Identifies errors or problems in the planning approach.",
-            "code": "Identifies errors or problems in the code implementation.",
-            "content": "Identifies mismatches between problem, plan, and code."
-        }
-        
-        schema = ConfidenceOutput.model_json_schema()
-        prompt = [
-            {
-                "role": "user",
-                "content": f"""You are a senior competitive programmer and technical reviewer. Your task is to assign confidence scores (0.0 to 1.0) for multiple decisions based on insights from multiple specialized agents.
-
-Decisions to evaluate: {json.dumps(decisions)}
-
-Analysis Types and Insights:
-{json.dumps([
-    {
-        "name": name,
-        "description": agent_descriptions.get(name, "Unknown agent"),
-        "purpose": analysis_meanings.get(name, ""),
-        "insights": analyses.get(name, {}).get('insights', '')
-    } for name in analyses.keys()
-], indent=2)}
-
-Instructions:
-1. For each decision and each analysis type, analyze the insights to determine relevance to the decision.
-2. Assign a confidence score (0.0 to 1.0) based on how strongly the insights support the decision.
-3. Provide a brief reasoning for each confidence score.
-4. Output a JSON object with the following structure:
-{{
-    "confidence_scores": {{
-        "<decision>": {{
-            "<analysis_type>": {{
-                "confidence": float,
-                "reasoning": str
-            }}
-        }}
-    }}
-}}
-
-Target JSON schema for each confidence score:
-{json.dumps(schema, indent=2)}
-
-Provide the response as valid JSON, with no extra text or markdown.
-"""
-            }
-        ]
-        
-        result = {}
-        for attempt in range(self.max_attempts):
-            if self.verbose:
-                print(f"Step: Confidence API call attempt {attempt + 1}")
-            try:
-                response, _, _ = self.gpt_chat(prompt)
-                json_str = self._extract_json_string(response)
-                if not json_str:
-                    print(f"Invalid output: No JSON structure found in response\nResponse: {response[:200]}...")
-                    continue
-                
-                json_str = self._fix_invalid_escapes(json_str)
-                data = json.loads(json_str)
-                confidence_scores = data.get('confidence_scores', {})
-                
-                for decision in decisions:
-                    result[decision] = {}
-                    for analysis_name in analyses.keys():
-                        conf_data = confidence_scores.get(decision, {}).get(analysis_name, {})
-                        result[decision][analysis_name] = ConfidenceOutput(
-                            confidence=conf_data.get('confidence', 0.0),
-                            reasoning=conf_data.get('reasoning', '')
-                        )
-                
-                if self.verbose:
-                    print("Step: All confidence scores calculated")
-                    for decision in decisions:
-                        for analysis_name in analyses.keys():
-                            print(f"Confidence for '{decision}' ({analysis_name}): {result[decision][analysis_name].confidence}")
-                return result
-            
-            except Exception as e:
-                print(f"Error in get_all_confidence attempt {attempt + 1}: {e}")
-                if attempt == self.max_attempts - 1:
-                    print("Step: Max attempts reached, returning default confidence outputs")
-                    return {
-                        decision: {
-                            name: ConfidenceOutput() for name in analyses.keys()
-                        } for decision in decisions
-                    }
-    def get_all_consistency(self, decisions: List[str], analyses: Dict[str, Dict]) -> Dict[str, Dict[str, Dict[str, ConsistencyOutput]]]:
-        """
-        Compute consistency scores for all decisions across all pairs of analysis types in a single API call.
-        Returns a dictionary mapping decisions to pairs of analysis types and their ConsistencyOutput.
-        """
-        if self.verbose:
-            print("Step: Computing all consistency scores in a single API call")
-        
-        agent_descriptions = {
-            "plan": "Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
-            "code": "Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
-            "content": "Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
-        }
-        
-        analysis_meanings = {
-            "plan": "Identifies errors or problems in the planning approach.",
-            "code": "Identifies errors or problems in the code implementation.",
-            "content": "Identifies mismatches between problem, plan, and code."
-        }
-        
-        schema = ConsistencyOutput.model_json_schema()
-        analysis_pairs = [
-            (name1, name2) for idx, name1 in enumerate(analyses.keys()) 
-            for name2 in list(analyses.keys())[idx+1:]
-        ]
-        
-        prompt = [
-            {
-                "role": "user",
-                "content": f"""You are a senior competitive programmer and technical reviewer. Your task is to compute consistency scores (0.0 to 1.0) for multiple decisions across pairs of analysis types.
-
-Decisions to evaluate: {json.dumps(decisions)}
-
-Analysis Types and Insights:
-{json.dumps([
-    {
-        "name": name,
-        "description": agent_descriptions.get(name, "Unknown agent"),
-        "purpose": analysis_meanings.get(name, ""),
-        "insights": analyses.get(name, {}).get('insights', '')
-    } for name in analyses.keys()
-], indent=2)}
-
-Analysis Pairs to compare: {json.dumps(analysis_pairs)}
-
-Instructions:
-1. For each decision and each pair of analysis types, analyze the insights to determine how well they align in supporting or undermining the decision.
-2. Compute a consistency score (0.0 to 1.0) based on the degree of agreement between the insights.
-3. Provide a brief reasoning for each consistency score.
-4. Output a JSON object with the following structure:
-{{
-    "consistency_scores": {{
-        "<decision>": {{
-            "<analysis1>-<analysis2>": {{
-                "consistency": float,
-                "reasoning": str
-            }}
-        }}
-    }}
-}}
-
-Target JSON schema for each consistency score:
-{json.dumps(schema, indent=2)}
-
-Provide the response as valid JSON, with no extra text or markdown.
-"""
-            }
-        ]
-        
-        result = {}
-        for attempt in range(self.max_attempts):
-            if self.verbose:
-                print(f"Step: Consistency API call attempt {attempt + 1}")
-            try:
-                response, _, _ = self.gpt_chat(prompt)
-                json_str = self._extract_json_string(response)
-                if not json_str:
-                    print(f"Invalid output: No JSON structure found in response\nResponse: {response[:200]}...")
-                    continue
-                
-                json_str = self._fix_invalid_escapes(json_str)
-                data = json.loads(json_str)
-                consistency_scores = data.get('consistency_scores', {})
-                
-                for decision in decisions:
-                    result[decision] = {}
-                    for name1, name2 in analysis_pairs:
-                        pair_key = f"{name1}-{name2}"
-                        cons_data = consistency_scores.get(decision, {}).get(pair_key, {})
-                        result[decision][pair_key] = ConsistencyOutput(
-                            consistency=cons_data.get('consistency', 0.0),
-                            reasoning=cons_data.get('reasoning', '')
-                        )
-                
-                if self.verbose:
-                    print("Step: All consistency scores calculated")
-                    for decision in decisions:
-                        for pair_key in result[decision].keys():
-                            print(f"Consistency for '{decision}' ({pair_key}): {result[decision][pair_key].consistency}")
-                return result
-            
-            except Exception as e:
-                print(f"Error in get_all_consistency attempt {attempt + 1}: {e}")
-                if attempt == self.max_attempts - 1:
-                    print("Step: Max attempts reached, returning default consistency outputs")
-                    return {
-                        decision: {
-                            f"{name1}-{name2}": ConsistencyOutput() 
-                            for name1, name2 in analysis_pairs
-                        } for decision in decisions
-                    }
-    def fast_collaborative_decision(self, plan: str, code: str, outcomes: str, item, problem_understanding) -> str:
-        """
-        Updated collaborative_decision to use optimized confidence and consistency functions.
-        """
-        if self.verbose:
-            print("Step: Starting collaborative decision with merged analysis")
-        try:
-            problem_text = self.data.get_prompt(item)
-            
-            # Perform merged analysis
-            merged_result = self.merged_analysis(plan, code, outcomes, problem_text, problem_understanding)
-            
-            # Extract analysis results
-            analyses = {
-                'plan': merged_result['plan_analysis'],
-                'code': merged_result['code_analysis'],
-                'content': merged_result['content_analysis']
-            }
-            
-            decisions = ['update plan', 'update code only']
-            
-            # Compute all confidence scores in one API call
-            confidence_scores = self.get_all_confidence(decisions, analyses)
-            
-            # Compute all consistency scores in one API call
-            consistency_scores = self.get_all_consistency(decisions, analyses)
-            
-            scores = {}
-            for decision in decisions:
-                if self.verbose:
-                    print(f"Step: Scoring decision '{decision}'")
-                total = 0.0
-                for name in analyses.keys():
-                    w = self.trust_weights[name]
-                    conf = confidence_scores[decision][name].confidence
-                    cons_prod = 1.0
-                    for name2 in analyses.keys():
-                        if name2 != name:
-                            pair_key = f"{name}-{name2}" if name < name2 else f"{name2}-{name}"
-                            cons = consistency_scores[decision].get(pair_key, ConsistencyOutput()).consistency
-                            cons_prod *= cons
-                    total += w * conf * cons_prod
-                scores[decision] = total
-                if self.verbose:
-                    print(f"Step: Score for '{decision}': {total}")
-            
-            decision = max(scores, key=scores.get)
-            if self.verbose:
-                print("Step: Decision made")
-                print(f"Decision: {decision}")
-            return decision, merged_result
-        
-        except Exception as e:
-            print(f"Error in collaborative_decision: {e}")
-            return "update code only"
-
-
-    
+                    return ContentAnalysisOutput(pr_tok=pr_tok, com_tok=com_tok)
     def get_confidence(self, decision: str, analysis: dict, analysis_name: str) -> ConfidenceOutput:
         if self.verbose:
             print(f"Step: Getting confidence for '{decision}' from {analysis_name}")
         agent_description = {
-            "plan": "You are a Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
-            "code": "You are a Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
-            "content": "You are a Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
+            "plan": "Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
+            "code": "Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
+            "content": "Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
         }.get(analysis_name, "Unknown agent")
         insight = analysis.get('insights', '') or analysis.get('plan_code_insights', '')
         meaning = self.analysis_meaning.get(analysis_name, "")
@@ -983,15 +630,16 @@ Provide the response as valid JSON, with no extra text or markdown.
             {
                 "role": "user",
                 "content": f"""You are a senior competitive programmer and technical reviewer. Your task is to assign a confidence score (0.0 to 1.0) for the decision to '{decision}', based on the {analysis_name.replace('_', ' ').title()} provided by a specialized agent.
-
 Agent Description: {agent_description}
 {analysis_name.replace('_', ' ').title()}: {meaning}
 Insight from {analysis_name.replace('_', ' ').title()}: {insight}
-
 Instructions:
 1. Analyze the insight to determine its relevance to the decision ('{decision}').
 2. Assign a confidence score (0.0 to 1.0) based on how strongly the insight supports the decision.
-
+3. Provide a brief reasoning for the confidence score.
+4. Output a JSON object matching this schema:
+{json.dumps(schema, indent=2)}
+Provide the response as valid JSON, with no extra text or markdown.
 """
             }
         ]
@@ -1013,14 +661,14 @@ Instructions:
         if self.verbose:
             print(f"Step: Getting consistency for '{decision}' between {name1} and {name2}")
         agent_description1 = {
-            "plan": "You are a Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
-            "code": "You are a Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
-            "content": "You are a Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
+            "plan": "Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
+            "code": "Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
+            "content": "Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
         }.get(name1, "Unknown agent")
         agent_description2 = {
-            "plan": "You are a Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
-            "code": "You are a Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
-            "content": "You are a Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
+            "plan": "Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
+            "code": "Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
+            "content": "Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
         }.get(name2, "Unknown agent")
         ins1 = analysis1.get('insights', '') or analysis1.get('plan_code_insights', '')
         ins2 = analysis2.get('insights', '') or analysis2.get('plan_code_insights', '')
@@ -1031,19 +679,19 @@ Instructions:
             {
                 "role": "user",
                 "content": f"""You are a senior competitive programmer and technical reviewer. Your task is to compute a consistency score (0.0 to 1.0) for the decision to '{decision}', using insights from {name1.replace('_', ' ').title()} and {name2.replace('_', ' ').title()}.
-
 {name1.replace('_', ' ').title()} Agent Description: {agent_description1}
 {name1.replace('_', ' ').title()} Purpose: {name1_meaning}
 Insight from {name1.replace('_', ' ').title()}: {ins1}
-
 {name2.replace('_', ' ').title()} Agent Description: {agent_description2}
 {name2.replace('_', ' ').title()} Purpose: {name2_meaning}
 Insight from {name2.replace('_', ' ').title()}: {ins2}
-
 Instructions:
 1. Analyze both insights to determine how well they align in supporting or undermining the decision ('{decision}').
 2. Compute a consistency score (0.0 to 1.0) based on the degree of agreement between the insights regarding the decision.
-
+3. Provide a brief reasoning for the consistency score.
+4. Output a JSON object matching this schema:
+{json.dumps(schema, indent=2)}
+Provide the response as valid JSON, with no extra text or markdown.
 """
             }
         ]
@@ -1061,22 +709,261 @@ Instructions:
                 print(f"Error in get_consistency attempt {attempt + 1}: {e}")
         return ConsistencyOutput()
 
+    def get_all_confidence(self, decisions: List[str], analyses: Dict[str, Dict]) -> Dict[str, Dict[str, ConfidenceOutput]]:
+        """
+        Compute confidence scores for all decisions across all analysis types in a single API call.
+        Returns a dictionary mapping decisions to analysis types and their ConfidenceOutput.
+        """
+        if self.verbose:
+            print("Step: Computing all confidence scores in a single API call")
+      
+        agent_descriptions = {
+            "plan": "Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
+            "code": "Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
+            "content": "Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
+        }
+      
+        analysis_meanings = {
+            "plan": "Identifies errors or problems in the planning approach.",
+            "code": "Identifies errors or problems in the code implementation.",
+            "content": "Identifies mismatches between problem, plan, and code."
+        }
+      
+        schema = ConfidenceOutput.model_json_schema()
+        prompt = [
+            {
+                "role": "user",
+                "content": f"""You are a senior competitive programmer and technical reviewer. Your task is to assign confidence scores (0.0 to 1.0) for multiple decisions based on insights from multiple specialized agents.
+Decisions to evaluate: {json.dumps(decisions)}
+Analysis Types and Insights:
+{json.dumps([
+    {
+        "name": name,
+        "description": agent_descriptions.get(name, "Unknown agent"),
+        "purpose": analysis_meanings.get(name, ""),
+        "insights": analyses.get(name, {}).get('insights', '')
+    } for name in analyses.keys()
+], indent=2)}
+Instructions:
+1. For each decision and each analysis type, analyze the insights to determine relevance to the decision.
+2. Assign a confidence score (0.0 to 1.0) based on how strongly the insights support the decision.
+3. Provide a brief reasoning for each confidence score.
+4. Output a JSON object with the following structure:
+{{
+    "confidence_scores": {{
+        "<decision>": {{
+            "<analysis_type>": {{
+                "confidence": float,
+                "reasoning": str
+            }}
+        }}
+    }}
+}}
+Target JSON schema for each confidence score:
+{json.dumps(schema, indent=2)}
+Provide the response as valid JSON, with no extra text or markdown.
+"""
+            }
+        ]
+      
+        result = {}
+        for attempt in range(self.max_attempts):
+            if self.verbose:
+                print(f"Step: Confidence API call attempt {attempt + 1}")
+            try:
+                response, _, _ = self.gpt_chat(prompt)
+                json_str = self._extract_json_string(response)
+                if not json_str:
+                    print(f"Invalid output: No JSON structure found in response\nResponse: {response[:200]}...")
+                    continue
+              
+                json_str = self._fix_invalid_escapes(json_str)
+                data = json.loads(json_str)
+                confidence_scores = data.get('confidence_scores', {})
+              
+                for decision in decisions:
+                    result[decision] = {}
+                    for analysis_name in analyses.keys():
+                        conf_data = confidence_scores.get(decision, {}).get(analysis_name, {})
+                        result[decision][analysis_name] = ConfidenceOutput(
+                            confidence=conf_data.get('confidence', 0.0),
+                            reasoning=conf_data.get('reasoning', '')
+                        )
+              
+                if self.verbose:
+                    print("Step: All confidence scores calculated")
+                    for decision in decisions:
+                        for analysis_name in analyses.keys():
+                            print(f"Confidence for '{decision}' ({analysis_name}): {result[decision][analysis_name].confidence}")
+                return result
+          
+            except Exception as e:
+                print(f"Error in get_all_confidence attempt {attempt + 1}: {e}")
+                if attempt == self.max_attempts - 1:
+                    print("Step: Max attempts reached, returning default confidence outputs")
+                    return {
+                        decision: {
+                            name: ConfidenceOutput() for name in analyses.keys()
+                        } for decision in decisions
+                    }
+
+    def get_all_consistency(self, decisions: List[str], analyses: Dict[str, Dict]) -> Dict[str, Dict[str, Dict[str, ConsistencyOutput]]]:
+        """
+        Compute consistency scores for all decisions across all pairs of analysis types in a single API call.
+        Returns a dictionary mapping decisions to pairs of analysis types and their ConsistencyOutput.
+        """
+        if self.verbose:
+            print("Step: Computing all consistency scores in a single API call")
+      
+        agent_descriptions = {
+            "plan": "Plan Analyst tasked with identifying errors or logical flaws in the planning approach, such as incorrect algorithmic steps or missing edge cases.",
+            "code": "Code Analyst tasked with identifying errors or problems in the code implementation, such as syntax errors, logical mistakes, or incorrect handling of inputs.",
+            "content": "Content Evaluator tasked with identifying mismatches or misalignments between the problem requirements, the proposed plan, and the code implementation."
+        }
+      
+        analysis_meanings = {
+            "plan": "Identifies errors or problems in the planning approach.",
+            "code": "Identifies errors or problems in the code implementation.",
+            "content": "Identifies mismatches between problem, plan, and code."
+        }
+      
+        schema = ConsistencyOutput.model_json_schema()
+        analysis_pairs = [
+            (name1, name2) for idx, name1 in enumerate(analyses.keys())
+            for name2 in list(analyses.keys())[idx+1:]
+        ]
+      
+        prompt = [
+            {
+                "role": "user",
+                "content": f"""You are a senior competitive programmer and technical reviewer. Your task is to compute consistency scores (0.0 to 1.0) for multiple decisions across pairs of analysis types.
+Decisions to evaluate: {json.dumps(decisions)}
+Analysis Types and Insights:
+{json.dumps([
+    {
+        "name": name,
+        "description": agent_descriptions.get(name, "Unknown agent"),
+        "purpose": analysis_meanings.get(name, ""),
+        "insights": analyses.get(name, {}).get('insights', '')
+    } for name in analyses.keys()
+], indent=2)}
+Analysis Pairs to compare: {json.dumps(analysis_pairs)}
+Instructions:
+1. For each decision and each pair of analysis types, analyze the insights to determine how well they align in supporting or undermining the decision.
+2. Compute a consistency score (0.0 to 1.0) based on the degree of agreement between the insights.
+3. Provide a brief reasoning for each consistency score.
+4. Output a JSON object with the following structure:
+{{
+    "consistency_scores": {{
+        "<decision>": {{
+            "<analysis1>-<analysis2>": {{
+                "consistency": float,
+                "reasoning": str
+            }}
+        }}
+    }}
+}}
+Target JSON schema for each consistency score:
+{json.dumps(schema, indent=2)}
+Provide the response as valid JSON, with no extra text or markdown.
+"""
+            }
+        ]
+      
+        result = {}
+        for attempt in range(self.max_attempts):
+            if self.verbose:
+                print(f"Step: Consistency API call attempt {attempt + 1}")
+            try:
+                response, _, _ = self.gpt_chat(prompt)
+                json_str = self._extract_json_string(response)
+                if not json_str:
+                    print(f"Invalid output: No JSON structure found in response\nResponse: {response[:200]}...")
+                    continue
+              
+                json_str = self._fix_invalid_escapes(json_str)
+                data = json.loads(json_str)
+                consistency_scores = data.get('consistency_scores', {})
+              
+                for decision in decisions:
+                    result[decision] = {}
+                    for name1, name2 in analysis_pairs:
+                        pair_key = f"{name1}-{name2}"
+                        cons_data = consistency_scores.get(decision, {}).get(pair_key, {})
+                        result[decision][pair_key] = ConsistencyOutput(
+                            consistency=cons_data.get('consistency', 0.0),
+                            reasoning=cons_data.get('reasoning', '')
+                        )
+              
+                if self.verbose:
+                    print("Step: All consistency scores calculated")
+                    for decision in decisions:
+                        for pair_key in result[decision].keys():
+                            print(f"Consistency for '{decision}' ({pair_key}): {result[decision][pair_key].consistency}")
+                return result
+          
+            except Exception as e:
+                print(f"Error in get_all_consistency attempt {attempt + 1}: {e}")
+                if attempt == self.max_attempts - 1:
+                    print("Step: Max attempts reached, returning default consistency outputs")
+                    return {
+                        decision: {
+                            f"{name1}-{name2}": ConsistencyOutput()
+                            for name1, name2 in analysis_pairs
+                        } for decision in decisions
+                    }
+    def perform_analyses(self, plan: str, code: str, test_log: str, problem: str, problem_understanding: str) -> Dict:
+        """
+        Performs plan, code, and content analysis in parallel using multi-threading.
+        Returns a dictionary containing all three analysis results.
+        """
+        if self.verbose:
+            print("Step: Performing parallel analyses (plan + code + content)")
+        task_dictionary = {
+            'plan': lambda: self.plan_analysis(plan, test_log, problem, problem_understanding),
+            'code': lambda: self.code_analysis(code, test_log, problem, problem_understanding),
+            'content': lambda: self.content_analysis(problem, problem_understanding, plan, code)
+        }
+        results = multi_thread_task_dict(task_dictionary, num_workers=3, show_progress=self.verbose)
+        pr_tok = sum(r.pr_tok for r in results.values())
+        com_tok = sum(r.com_tok for r in results.values())
+        analysis_result = {
+            'plan_analysis': {'insights': results['plan'].insights},
+            'code_analysis': {'insights': results['code'].insights},
+            'content_analysis': {'insights': results['content'].insights},
+            'pr_tok': pr_tok,
+            'com_tok': com_tok
+        }
+        if self.verbose:
+            print("Step: Parallel analyses completed")
+            print(f"Plan insights: {analysis_result['plan_analysis']['insights'][:100]}...")
+            print(f"Code insights: {analysis_result['code_analysis']['insights'][:100]}...")
+            print(f"Content insights: {analysis_result['content_analysis']['insights'][:100]}...")
+        return analysis_result
+
     def collaborative_decision(self, plan: str, code: str, outcomes: str, item) -> str:
         if self.verbose:
             print("Step: Starting collaborative decision with merged analysis")
+        merged_result = {
+            'plan_analysis': {'insights': ''},
+            'code_analysis': {'insights': ''},
+            'content_analysis': {'insights': ''},
+            'pr_tok': 0,
+            'com_tok': 0
+        }
         try:
             problem_understanding, _, _ = self.get_problem_understanding(item)
             problem_text = self.data.get_prompt(item)
-            
-            # Single API call for all three analyses
-            merged_result = self.merged_analysis(plan, code, outcomes, problem_text, problem_understanding)
-            
+          
+            # Perform analyses in parallel
+            merged_result = self.perform_analyses(plan, code, outcomes, problem_text, problem_understanding)
+          
             # Extract analysis results
             A_plan = merged_result['plan_analysis']
             A_code = merged_result['code_analysis']
             A_content = merged_result['content_analysis']
-            
-            
+          
+          
             decisions = ['update plan', 'update code only']
             scores = {}
             for d in decisions:
@@ -1085,12 +972,12 @@ Instructions:
                 total = 0.0
                 for name, A_i in [('plan', A_plan), ('code', A_code), ('content', A_content)]:
                     w = self.trust_weights[name]
-                    conf_output = self.get_confidence(d, A_i.model_dump(), name)
+                    conf_output = self.get_confidence(d, A_i, name)
                     conf = conf_output.confidence
                     cons_prod = 1.0
                     for oname, A_j in [('plan', A_plan), ('code', A_code), ('content', A_content)]:
                         if oname != name:
-                            cons_output = self.get_consistency(d, A_i.model_dump(), name, A_j.model_dump(), oname)
+                            cons_output = self.get_consistency(d, A_i, name, A_j, oname)
                             cons_prod *= cons_output.consistency
                     total += w * conf * cons_prod
                 scores[d] = total
@@ -1100,23 +987,111 @@ Instructions:
             if self.verbose:
                 print("Step: Decision made")
                 print(f"Decision: {decision}")
-            return decision
+            return decision, merged_result
         except Exception as e:
             print(f"Error in collaborative_decision: {e}")
-            return "update code only"
+            return "update code only", merged_result
 
+    def fast_collaborative_decision(self, plan: str, code: str, outcomes: str, item) -> str:
+        """
+        Updated collaborative_decision to use optimized confidence and consistency functions.
+        """
+        if self.verbose:
+            print("Step: Starting collaborative decision with merged analysis")
+        merged_result = {
+            'plan_analysis': {'insights': ''},
+            'code_analysis': {'insights': ''},
+            'content_analysis': {'insights': ''},
+            'pr_tok': 0,
+            'com_tok': 0
+        }
+        try:
+            problem_understanding, _, _ = self.get_problem_understanding(item)
+            problem_text = self.data.get_prompt(item)
+          
+            # Perform analyses in parallel
+            merged_result = self.perform_analyses(plan, code, outcomes, problem_text, problem_understanding)
+          
+            # Extract analysis results
+            analyses = {
+                'plan': merged_result['plan_analysis'],
+                'code': merged_result['code_analysis'],
+                'content': merged_result['content_analysis']
+            }
+          
+            decisions = ['update plan', 'update code only']
+          
+            # Compute all confidence scores in one API call
+            confidence_scores = self.get_all_confidence(decisions, analyses)
+          
+            # Compute all consistency scores in one API call
+            consistency_scores = self.get_all_consistency(decisions, analyses)
+          
+            scores = {}
+            for decision in decisions:
+                if self.verbose:
+                    print(f"Step: Scoring decision '{decision}'")
+                total = 0.0
+                for name in analyses.keys():
+                    w = self.trust_weights[name]
+                    conf = confidence_scores[decision][name].confidence
+                    cons_prod = 1.0
+                    for name2 in analyses.keys():
+                        if name2 != name:
+                            pair_key = f"{name}-{name2}" if name < name2 else f"{name2}-{name}"
+                            cons = consistency_scores[decision].get(pair_key, ConsistencyOutput()).consistency
+                            cons_prod *= cons
+                    total += w * conf * cons_prod
+                scores[decision] = total
+                if self.verbose:
+                    print(f"Step: Score for '{decision}': {total}")
+          
+            decision = max(scores, key=scores.get)
+            if self.verbose:
+                print("Step: Decision made")
+                print(f"Decision: {decision}")
+            return decision, merged_result
+      
+        except Exception as e:
+            print(f"Error in collaborative_decision: {e}")
+            return "update code only", merged_result
+
+    def get_multiple_analyses(self, plans: List[str], codes: List[str], test_logs: List[str], problem: str, problem_understanding: str) -> List[Dict]:
+        """
+        Performs plan, code, and content analysis for multiple plan/code/test_log triples in parallel.
+        Returns a list of dictionaries, each containing the three analysis results for one triple.
+        """
+        if self.verbose:
+            print("Step: Performing multiple analyses")
+        if len(plans) != len(codes) or len(plans) != len(test_logs):
+            raise ValueError("Plans, codes, and test_logs must have the same length")
+        
+        task_dictionary = {}
+        for idx in range(len(plans)):
+            task_dictionary[idx] = lambda idx=idx: self.perform_analyses(
+                plans[idx], codes[idx], test_logs[idx], problem, problem_understanding
+            )
+        
+        results = multi_thread_task_dict(task_dictionary, num_workers=min(3, len(plans)), show_progress=self.verbose)
+        analyses_list = [results[i] for i in sorted(results.keys())]
+        
+        if self.verbose:
+            print("Step: Multiple analyses completed")
+            for idx, analysis in enumerate(analyses_list):
+                print(f"Analysis {idx}: Plan insights: {analysis['plan_analysis']['insights'][:100]}...")
+        
+        return analyses_list
     def debug_plan(self, iteration: int, plan: str, error_analysis: Dict, problem: str, problem_understanding: str, decision: str):
         if self.verbose:
             print(f"Step: Debugging plan at iteration {iteration}")
         prev_logs = self.rt.historical_data.get(iteration - 1, {})
-        previous_reflection = prev_logs.get('analysis_reflection', 'No previous analysis reflection available')
         rt_prompt = self.rt.generate_prompt_for_plan_reflection(
             iteration, error_analysis, problem, problem_understanding, plan, historical_logs=prev_logs
         )
         try:
             if self.verbose:
                 print("Step: Generating analysis reflection for plan")
-            print(f"Prompt for analysis reflection: {rt_prompt}")
+                print(f"Prompt for analysis reflection: {rt_prompt}")
             analysis_reflection, _, _ = self.gpt_chat([{
                 'role': 'user',
                 'content': rt_prompt
@@ -1169,11 +1144,11 @@ Provide the refined plan in a clear, readable format, optionally using markdown.
         """
         if self.verbose:
             print(f"Step: Debugging code at iteration {iteration} using code analysis only")
-        
+      
         # Extract insights and test results from error_analysis
         insights = error_analysis.get('insights', 'No insights provided')
         test_log = error_analysis.get('test_results', 'No test results provided')
-        
+      
         # Prompt for code refinement using code analysis insights directly
         code_prompt = [
             {
@@ -1194,7 +1169,7 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
 """
             }
         ]
-        
+      
         try:
             if self.verbose:
                 print("Step: Making API call for code update")
@@ -1206,27 +1181,24 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
         except Exception as e:
             print(f"Error debugging code: {e}")
             revised_code = code
-        
-        # # Update historical data (without reflection)
-        # self.rt.update_historical_data(iteration, {
-        #     'previous_code': code,
-        #     'previous_success_rate': error_analysis.get('success_rate'),
-        #     'previous_iteration': iteration - 1,
-        #     'analysis_insights': insights  # Store insights instead of reflection
-        # })
-        
+      
         if self.verbose:
             print("Step: Historical data updated for code")
-        
-        return revised_code, insights  
-
+      
+        return revised_code, insights
     def _inner_run(self, item):
         if self.verbose:
             print("Step: Starting inner run")
         pr_tok = 0
         com_tok = 0
-        
-        
+        # Call get_problem_understanding once at the start and reuse
+        try:
+            problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
+            pr_tok += pr_tok_u
+            com_tok += com_tok_u
+        except Exception as e:
+            print(f"Error getting problem understanding: {e}")
+            problem_understanding = ""
         try:
             plans, pr_tok_p, com_tok_p = self.generate_plans(item)
             pr_tok += pr_tok_p
@@ -1244,7 +1216,6 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
         best_code = ""
         test_log = ""
         code_score = 0.0
-        problem_understanding = understanding
         for plan_idx, plan_output in enumerate(selected_plannings, 1):
             if self.verbose:
                 print(f"Step: Processing plan {plan_idx}")
@@ -1263,12 +1234,11 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
             except Exception as e:
                 print(f"Error evaluating initial code: {e}")
                 test_log = f"Evaluation failed: {e}"
-            
             for i in range(1, self.t + 1):
                 if self.verbose:
                     print(f"Step: Iteration {i} for plan {plan_idx}")
                 try:
-                    decision, merged_result = self.fast_collaborative_decision(planning, best_code, test_log, item, problem_understanding)
+                    decision, merged_result = self.fast_collaborative_decision(planning, best_code, test_log, item)
                     if self.verbose:
                         print(f"Step: Decision made: {decision}")
                 except Exception as e:
@@ -1278,11 +1248,11 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
                     try:
                         A_plan = merged_result['plan_analysis']
                         revised_plan, _ = self.debug_plan(i, planning, {
-                            'insights': A_plan.insights,
+                            'insights': A_plan['insights'],
                             'test_results': test_log,
                             'success_rate': code_score * 100,
                         }, self.data.get_prompt(item), problem_understanding, decision)
-                        best_code, code_score, test_log, pr_tok_code, com_tok_code = self.generate_code_from_plan(item, revised_plan, self.data.get_prompt(item), self.get_sample_io_str(item))
+                        best_code, code_score, test_log, pr_tok_code, com_tok_code = self.generate_code_from_plan(item, revised_plan, self.data.get_prompt(item), self.get_sample_io_str(item), "", problem_understanding)
                         planning = revised_plan
                         pr_tok += pr_tok_code
                         com_tok += com_tok_code
@@ -1304,7 +1274,7 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
                     try:
                         A_code = merged_result['code_analysis']
                         revised_code, _ = self.debug_code(i, planning, best_code, {
-                            'insights': A_code.insights,
+                            'insights': A_code['insights'],
                             'test_results': test_log,
                             'success_rate': code_score * 100,
                         }, self.data.get_prompt(item), problem_understanding, decision)
@@ -1346,3 +1316,4 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
                 print(f"Attempt {attempt} failed: {e}")
                 if attempt == max_retries:
                     return "No_solution_found",0,0
+    

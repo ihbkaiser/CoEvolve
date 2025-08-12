@@ -131,3 +131,44 @@ class BaseStrategy(object):
                     f'completed {i+1}/{num_items}, Solved: {self.results[i]["is_solved"]}, number of success = {num_success}/{i+1}, acc = {round(num_success/(i+1)*100, 2)}')
 
             # break
+    def run_problem(self, idx: int):
+        if idx < 0 or idx >= len(self.data):
+            raise ValueError(f"Index {idx} out of range for dataset with {len(self.data)} items")
+        item = copy.deepcopy(self.data[idx])
+        item["source_codes"] = []
+        item["responses"] = []
+        item["prompt_tokens"] = []
+        item["completion_tokens"] = []
+        item["no_of_try"] = 0
+        cur_pass = 0
+        is_solved = False
+        cur_imp = ""
+        while cur_pass < self.pass_at_k and not is_solved:
+            response, prompt_tokens, completion_tokens = self.run_single_pass(item)
+            if hasattr(self, "parse_code"):
+                cur_imp = self.parse_code(response)
+            else:
+                cur_imp = parse_response(response)
+            item["source_codes"].append(cur_imp)
+            item["responses"].append(response)
+            item["prompt_tokens"].append(prompt_tokens)
+            item["completion_tokens"].append(completion_tokens)
+            item["no_of_try"] += 1
+            is_solved = self.data.evaluate(
+                item=item,
+                cur_imp=cur_imp,
+                language=self.language
+            )
+            cur_pass += 1
+        item["is_solved"] = is_solved
+        item["language"] = self.language
+        item["task_id"] = item[self.data.id_key]
+        # Update or add to results
+        if idx < len(self.results):
+            self.results.results[idx] = item
+            self.results.save_results()
+        else:
+            self.results.add_result(item)
+        if self.verbose:
+            print(f"Completed problem at index {idx}, Solved: {is_solved}")
+        return item

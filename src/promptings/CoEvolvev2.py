@@ -1,5 +1,4 @@
 from typing import List, Optional, Dict, Tuple
-
 import tiktoken
 import os
 import json
@@ -9,7 +8,8 @@ import time
 import random
 from datetime import datetime
 from copy import deepcopy
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm.auto import tqdm
 from .Base import BaseStrategy
 from models.Base import BaseModel
 from datasets.Dataset import Dataset
@@ -22,14 +22,38 @@ from results.Results import Results
 from evaluations.func_evaluate import evaluate_io
 import numpy as np
 from forms import *
+
+def multi_thread_task_dict(task_dictionary, num_workers=1, show_progress=True):
+    final_results = {}
+    futures = []
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for id_, task in task_dictionary.items():
+            futures.append(
+                executor.submit(
+                    lambda id_=id_, task=task: {"id": id_, "task_result": task()}
+                )
+            )
+
+        if show_progress:
+            with tqdm(total=len(futures)) as pbar:
+                for future in as_completed(futures):
+                    result = future.result()
+                    final_results[result["id"]] = result["task_result"]
+                    pbar.update(1)
+        else:
+            for future in as_completed(futures):
+                result = future.result()
+                final_results[result["id"]] = result["task_result"]
+
+    return final_results
+
 class AnalysisReflection:
     def __init__(self):
         self.historical_data = {}  # Dictionary to store iteration data
-
     def update_historical_data(self, iteration: int, data: Dict):
         """Store data for the given iteration."""
         self.historical_data[iteration] = data
-
     def generate_prompt_for_plan_reflection(self, iteration: int, error_analysis: Dict, problem: str, problem_understanding: str, plan: str, historical_logs: Dict) -> str:
         """Generate a conversational prompt for plan debugging, evolving from R(t-1)."""
         previous_reflection = historical_logs.get('analysis_reflection', 'No previous analysis reflection available')
@@ -38,7 +62,6 @@ class AnalysisReflection:
         
         # Base prompt structure
         prompt = f"""You are a debugging assistant for a competitive programming problem. Your task is to provide a conversational analysis reflection to guide plan refinement at iteration {iteration}. The reflection should evolve from the previous reflection (R(t-1)) and incorporate new insights from plan analysis.
-
 Problem: {problem}
 Problem Understanding: {problem_understanding}
 Current Plan: {plan}
@@ -46,11 +69,9 @@ Test Log: {error_analysis.get('test_results', '')}
 Insights from Plan Analysis: {insights}
 Previous Analysis Reflection (R(t-1)): {previous_reflection}
 Success Rate: {success_rate:.2f}%
-
 Evolve the reflection from R(t-1) by addressing the new insights. Provide a reflection to guide the next plan update.
 """
         return prompt
-
     def generate_prompt_for_code_reflection(self, iteration: int, error_analysis: Dict, problem: str, problem_understanding: str, plan: str, code: str, historical_logs: Dict) -> str:
         """Generate a conversational prompt for code debugging, evolving from R(t-1)."""
         previous_reflection = historical_logs.get('analysis_reflection', 'No previous analysis reflection available')
@@ -59,7 +80,6 @@ Evolve the reflection from R(t-1) by addressing the new insights. Provide a refl
         
         # Base prompt structure
         prompt = f"""You are a debugging assistant for a competitive programming problem. Your task is to provide a conversational analysis reflection to guide code refinement at iteration {iteration}. The reflection should evolve from the previous reflection (R(t-1)) and incorporate new insights from code analysis.
-
 Problem: {problem}
 Problem Understanding: {problem_understanding}
 Current Plan: {plan}
@@ -71,11 +91,9 @@ Test Log: {error_analysis.get('test_results', '')}
 Insights from Code Analysis: {insights}
 Previous Analysis Reflection (R(t-1)): {previous_reflection}
 Success Rate: {success_rate:.2f}%
-
 Evolve the reflection from R(t-1) by addressing the new insights. Provide a reflection to guide the next code update.
 """
         return prompt
-
 
 class CoEvolvev2(BaseStrategy):
     def __init__(
@@ -83,6 +101,8 @@ class CoEvolvev2(BaseStrategy):
         k: int = 3,
         t: int = 5,
         max_attempts: int = 3,
+        min_llm_score: int = 50,
+        num_workers: int = 4,  # Added for parallelization
         *args,
         **kwargs
     ):
@@ -91,6 +111,8 @@ class CoEvolvev2(BaseStrategy):
         self.top_plan = 1
         self.t = t
         self.number_of_code_per_plan = 3
+        self.min_llm_score = min_llm_score
+        self.num_workers = num_workers  # Number of threads for parallel execution
         self.trust_weights = {
             'plan': 0.4,
             'code': 0.3,
@@ -104,7 +126,7 @@ class CoEvolvev2(BaseStrategy):
         self.history = []
         self.max_attempts = max_attempts
         self.verbose = True
-        self.rt = AnalysisReflection()  # Initialize AnalysisReflection for debugging guidance
+        self.rt = AnalysisReflection()
 
     def _extract_json_string(self, text: str) -> Optional[str]:
         m = re.search(r'```json\s*({[\s\S]*?})\s*```', text, re.DOTALL)
@@ -277,10 +299,13 @@ Example output:
         codes = []
         pr_tok = 0
         com_tok = 0
+        api_calls = 0
         std_input_prompt = "## Note: Strictly follow the input and output format. The input should be taken from Standard input and output should be given to standard output. If you are writing a function then after the function definition take input using `input()` function then call the function with specified parameters and finally print the output of the function. Do not add extra print statement otherwise it will failed the test cases." if isinstance(self.data, (APPSDataset, CodeContestDataset, XCodeDataset)) else ""
         context = f"Problem: {problem_text}\n"
         context += understanding if understanding else ""
-        for c_idx in range(1, self.number_of_code_per_plan + 1):
+
+        # Define task for generating a single code variant
+        def generate_code_task(c_idx, previous_codes):
             if self.verbose:
                 print(f"Step: Generating code variant {c_idx}")
             diversity_prompt = "" if c_idx == 1 else f"""
@@ -312,19 +337,34 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
             ]
             try:
                 if self.verbose:
-                    print("Step: Making API call for code generation")
+                    print(f"Step: Making API call for code generation (variant {c_idx})")
                 code_response, pr_tok_1, com_tok_1 = self.gpt_chat(processed_input=input_for_code_generation)
-                pr_tok += pr_tok_1
-                com_tok += com_tok_1
-                item['api_calls'] += 1
                 code = self.parse_code(code_response)
                 if self.verbose:
-                    print(f"Generated code variant {c_idx}: {code}")
-                codes.append(code)
-                previous_codes += f"\n- {code}"
+                    print(f"Generated code variant {c_idx}: {code[:100]}...")
+                return code, pr_tok_1, com_tok_1, 1
             except Exception as e:
                 print(f"Error generating code {c_idx}: {e}")
-                codes.append("")
+                return "", 0, 0, 0
+
+        # Create task dictionary for parallel code generation
+        task_dict = {
+            c_idx: lambda c_idx=c_idx, prev_codes=previous_codes: generate_code_task(c_idx, prev_codes)
+            for c_idx in range(1, self.number_of_code_per_plan + 1)
+        }
+        previous_codes = ""
+        code_results = multi_thread_task_dict(task_dict, num_workers=self.num_workers, show_progress=self.verbose)
+
+        for c_idx in range(1, self.number_of_code_per_plan + 1):
+            result = code_results.get(c_idx, ("", 0, 0, 0))
+            code, pr_tok_1, com_tok_1, api_call = result
+            pr_tok += pr_tok_1
+            com_tok += com_tok_1
+            api_calls += api_call
+            if code:
+                codes.append(code)
+                previous_codes += f"\n- {code}"
+
         if self.verbose:
             print(f"Step: {len(codes)} code variants generated. Starting evaluation")
         evaluated_codes = []
@@ -345,6 +385,8 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
             except Exception as e:
                 print(f"Error evaluating code: {e}")
                 evaluated_codes.append((code, 0.0, f"Evaluation failed: {e}"))
+        
+        item['api_calls'] = item.get('api_calls', 0) + api_calls
         max_score = max([score for _, score, _ in evaluated_codes], default=0.0)
         top_codes = [(code, test_log) for code, score, test_log in evaluated_codes if score == max_score]
         best_code, best_test_log = random.choice(top_codes) if top_codes else ("", "")
@@ -359,16 +401,17 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
         plans = []
         pr_tok = 0
         com_tok = 0
+        api_calls = 0
         previous_approaches = ""
         problem_text = self.data.get_prompt(item)
         sample_io_prompt = self.get_sample_io_str(item)
         problem_understanding, pr_u, com_u = self.get_problem_understanding(item)
         pr_tok += pr_u
         com_tok += com_u
-        max_plans = self.k
-        for t in range(1, max_plans + 1):
-            if self.verbose:
-                print(f"Step: Generating plan variant {t}")
+        api_calls += 1
+
+        # Define task for generating a single plan
+        def generate_plan_task(t, previous_approaches):
             diff_prompt = "" if t == 1 else f", different from the following previous approaches: {previous_approaches}"
             input_recall = [
                 {"role": "user", "content": f"""Given a problem and its understanding, recall an approach that can solve it{diff_prompt}, provide a tutorial for the approach, then recall a relevant problem that uses this approach, and explain with plan and code.
@@ -388,14 +431,17 @@ Provide the response in a clear, readable format, optionally using markdown for 
                 }
             ]
             parsed_response = None
+            local_pr_tok = 0
+            local_com_tok = 0
+            local_api_calls = 0
             for attempt in range(self.max_attempts):
                 if self.verbose:
                     print(f"Step: Approach recall attempt {attempt + 1} for variant {t}")
                 try:
                     response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_recall)
-                    pr_tok += pr_tok_temp
-                    com_tok += com_tok_temp
-                    item['api_calls'] += 1
+                    local_pr_tok += pr_tok_temp
+                    local_com_tok += com_tok_temp
+                    local_api_calls += 1
                     parsed_response = self.parse_structured_output(response, ApproachRecall)
                     if self.verbose:
                         print("Step: Approach recall successful")
@@ -404,15 +450,14 @@ Provide the response in a clear, readable format, optionally using markdown for 
                 except Exception as e:
                     print(f"Error in recall attempt {attempt + 1}: {e}")
                     if attempt == self.max_attempts - 1:
-                        continue
+                        return None, 0, 0, 0
             if parsed_response is None:
-                continue
+                return None, 0, 0, 0
             approach_name = parsed_response.approach_name
             approach_tutorial = parsed_response.tutorial
             algorithm_prompt = f"## Relevant Approach: {approach_name}\n{approach_tutorial}"
             example_description = parsed_response.problem_description
             example_planning = parsed_response.planning
-            previous_approaches += f"\n- {approach_name}"
             input_for_problem_planning = [
                 {
                     "role": "user",
@@ -430,19 +475,23 @@ Provide the response in a clear, readable format, optionally using markdown for 
                     ),
                 },
             ]
+            planning = None
             for attempt in range(self.max_attempts):
                 if self.verbose:
                     print(f"Step: Planning generation attempt {attempt + 1} for variant {t}")
                 try:
-                    planning, pr_tok_temp, com_tok_temp = self.gpt_chat(input_for_problem_planning)
-                    pr_tok += pr_tok_temp
-                    com_tok += com_tok_temp
-                    item['api_calls'] += 1
+                    planning_response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_for_problem_planning)
+                    local_pr_tok += pr_tok_temp
+                    local_com_tok += com_tok_temp
+                    local_api_calls += 1
+                    planning = planning_response
                     break
                 except Exception as e:
                     print(f"Error in planning attempt {attempt + 1}: {e}")
                     if attempt == self.max_attempts - 1:
-                        continue
+                        return None, 0, 0, 0
+            if planning is None:
+                return None, 0, 0, 0
             input_for_planning_verification = [
                 {"role": "user", "content": f"""You are an expert evaluator for competitive programming plans.
                  Assess the plan for alignment with the problem and overall solvability (0-100). Provide explanations and scores.
@@ -459,9 +508,9 @@ Provide the response in a clear, readable format, optionally using markdown.
                     print(f"Step: Planning verification attempt {attempt + 1} for variant {t}")
                 try:
                     verification_res, pr_tok_temp, com_tok_temp = self.gpt_chat(input_for_planning_verification)
-                    pr_tok += pr_tok_temp
-                    com_tok += com_tok_temp
-                    item['api_calls'] += 1
+                    local_pr_tok += pr_tok_temp
+                    local_com_tok += com_tok_temp
+                    local_api_calls += 1
                     verification_parsed = self.parse_structured_output(verification_res, VerificationOutput)
                     if self.verbose:
                         print("Step: Verification successful")
@@ -470,45 +519,77 @@ Provide the response in a clear, readable format, optionally using markdown.
                 except Exception as e:
                     print(f"Error in verification attempt {attempt + 1}: {e}")
                     if attempt == self.max_attempts - 1:
-                        continue
+                        return None, 0, 0, 0
             if verification_parsed is None:
-                continue
+                return None, 0, 0, 0
             llm_score = verification_parsed.overall_solvability
-            plans.append((planning, llm_score))
-            if self.verbose:
-                print(f"Step: Plan variant {t} completed")
-                print(f"LLM score: {llm_score}")
+            if llm_score < self.min_llm_score:
+                return None, 0, 0, 0
+            best_code, code_score, test_log, pr_tok_code, com_tok_code = self.generate_code_from_plan(item, planning, problem_text, sample_io_prompt)
+            local_pr_tok += pr_tok_code
+            local_com_tok += com_tok_code
+            local_api_calls += item.get('api_calls', 0) - api_calls  # Account for API calls in generate_code_from_plan
+            return PlanOutput(
+                planning=planning,
+                code=best_code,
+                llm_score=llm_score,
+                code_score=code_score,
+                test_log=test_log
+            ), local_pr_tok, local_com_tok, local_api_calls
+
+        # Create task dictionary for parallel plan generation
+        task_dict = {
+            t: lambda t=t, prev_approaches=previous_approaches: generate_plan_task(t, prev_approaches)
+            for t in range(1, self.k + 1)
+        }
+        plan_results = multi_thread_task_dict(task_dict, num_workers=self.num_workers, show_progress=self.verbose)
+
+        for t in range(1, self.k + 1):
+            result = plan_results.get(t, (None, 0, 0, 0))
+            plan_output, local_pr_tok, local_com_tok, local_api_calls = result
+            if plan_output:
+                plans.append(plan_output)
+                previous_approaches += f"\n- {plan_output.planning}"
+            pr_tok += local_pr_tok
+            com_tok += local_com_tok
+            api_calls += local_api_calls
+
+        item['api_calls'] = item.get('api_calls', 0) + api_calls
+
         if len(plans) < self.k:
             print(f"Warning: Only {len(plans)}/{self.k} valid plans generated, attempting one more generation")
             additional_plans, pr_tok_add, com_tok_add = self.generate_plans(item)
             pr_tok += pr_tok_add
             com_tok += com_tok_add
             plans.extend(additional_plans)
+
         # Sort plans by llm_score and select the top one
-        plans.sort(key=lambda x: x[1], reverse=True)
+        plans.sort(key=lambda x: x.llm_score, reverse=True)
         if not plans:
             print("Warning: No valid plans generated. Returning empty result.")
             return [], pr_tok, com_tok
-        best_plan, best_llm_score = plans[0]
-        # Generate codes for the best plan only
+        
+        best_plan = plans[0]
         if self.verbose:
-            print(f"Step: Generating codes for best plan with LLM score: {best_llm_score}")
+            print(f"Step: Generating codes for best plan with LLM score: {best_plan.llm_score}")
         best_code, code_score, test_log, pr_tok_code, com_tok_code = self.generate_code_from_plan(
-            item, best_plan, problem_text, sample_io_prompt, "", problem_understanding
+            item, best_plan.planning, problem_text, sample_io_prompt, "", problem_understanding
         )
         pr_tok += pr_tok_code
         com_tok += com_tok_code
+        item['api_calls'] = item.get('api_calls', 0) + api_calls
+
         # Return a single PlanOutput for the best plan
         result = [PlanOutput(
-            planning=best_plan,
-            llm_score=best_llm_score,
+            planning=best_plan.planning,
+            llm_score=best_plan.llm_score,
             code=best_code,
             code_score=code_score,
             test_log=test_log
         )]
         if self.verbose:
             print("Step: Best plan and code selected")
-            print(f"Best plan LLM score: {best_llm_score}, Best code score: {code_score}")
+            print(f"Best plan LLM score: {best_plan.llm_score}, Best code score: {code_score}")
         return result, pr_tok, com_tok
 
     def plan_analysis(self, plan: str, code: str, test_log: str, problem: str, problem_understanding: str) -> PlanAnalysisOutput:
@@ -520,11 +601,11 @@ Provide the response in a clear, readable format, optionally using markdown.
             {
                 "role": "user",
                 "content": (
-                    "You are an expert competitive-programming plan analyst. "
-                    "Given only a proposed solution plan and a test log showing failures, "
-                    "simulate the plan step-by-step on the failing test case(s) to identify and localize any "
-                    "logical flaws, incorrect assumptions, or mismatches within the plan itself. "
-                    "Provide a detailed analysis in a clear, readable format, optionally using markdown."
+                    "You are an expert competitive-programming plan analyst with extensive experience in debugging and logical reasoning. "
+                    "Given a proposed solution plan, the problem description, your understanding of the problem, and a test log showing failures, "
+                    "Your primary task is to perform a detailed step-by-step simulation of the proposed solution plan using the specific input data from the failing test case(s) in the test log. "
+                    "For each step of the plan, trace the logic using the test case input, identify where the simulation produces results that diverge from the expected output in the test log, and localize the specific logical flaws, incorrect assumptions, or mismatches in the plan. "
+                    "Your mission is to pinpoint errors in the plan and provide actionable insights for refinement to align with the problem requirements."
                     f"Problem Description:\n{problem}\n\n"
                     f"Problem Understanding:\n{problem_understanding}\n\n"
                     f"Proposed Plan:\n{plan}\n\n"
@@ -632,7 +713,7 @@ Provide the response in a clear, readable format, optionally using markdown.
                 parsed.com_tok = com_tok
                 if self.verbose:
                     print("Step: Content analysis successful")
-                    print(f"Insights: {parsed.insights[:100]}...")
+                    print(f"Insights: {parsed.plan_code_insights[:100]}...")
                 return parsed
             except Exception as e:
                 print(f"Error in content_analysis attempt {attempt + 1}: {e}")
@@ -852,7 +933,7 @@ Provide the revised code in a clear, readable format, optionally within ```{self
                 print("Step: Making API call for code update")
             updated_response, _, _ = self.gpt_chat(code_prompt)
             updated_parsed = self.parse_structured_output(updated_response, CodeOutput)
-            revised_code = self.parse_code(updated_response)  # Note: Changed to updated_response if CodeOutput not defined, but assuming it is
+            revised_code = self.parse_code(updated_response)
             if self.verbose:
                 print("Step: Code updated")
                 print(f"Revised code: {revised_code[:100]}...")
@@ -997,4 +1078,4 @@ Provide the revised code in a clear, readable format, optionally within ```{self
             except Exception as e:
                 print(f"Attempt {attempt} failed: {e}")
                 if attempt == max_retries:
-                    raise e
+                    return "# No valid solution generated", 0, 0
