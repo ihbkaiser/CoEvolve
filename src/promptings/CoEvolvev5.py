@@ -46,6 +46,8 @@ Test Log: {error_analysis.get('test_results', '')}
 Insights from Plan Analysis: {insights}
 Previous Analysis Reflection (R(t-1)): {previous_reflection}
 Success Rate from previous iteration t-1: {success_rate:.2f}%
+
+IMPORTANT: You should give only the reflection to guide the next plan update. Do not add extra words.
 """
         return prompt
 
@@ -483,7 +485,7 @@ IMPORTANT: Structure your response with markdown sections for each field: ## ali
             print("Step: Best plan and code selected")
             print(f"Best plan LLM score: {best_llm_score}, Best code score: {code_score}")
         return result, pr_tok, com_tok
-    def plan_analysis(self, plan: str, code: str, test_log: str, problem: str, problem_understanding: str) -> PlanAnalysisOutput:
+    def plan_analysis(self, plan: str, test_log: str, problem: str, problem_understanding: str) -> PlanAnalysisOutput:
         if self.verbose:
             print("Step: Performing plan analysis")
             print(f"Plan: {plan[:100]}...")
@@ -930,7 +932,7 @@ Provide the response as valid JSON, with no extra text or markdown.
         analysis_result = {
             'plan_analysis': {'insights': results['plan'].insights},
             'code_analysis': {'insights': results['code'].insights},
-            'content_analysis': {'insights': results['content'].insights},
+            'content_analysis': {'insights': results['content'].plan_code_insights},
             'pr_tok': pr_tok,
             'com_tok': com_tok
         }
@@ -1035,13 +1037,13 @@ Provide the response as valid JSON, with no extra text or markdown.
                 for name in analyses.keys():
                     w = self.trust_weights[name]
                     conf = confidence_scores[decision][name].confidence
-                    cons_prod = 1.0
-                    for name2 in analyses.keys():
-                        if name2 != name:
-                            pair_key = f"{name}-{name2}" if name < name2 else f"{name2}-{name}"
-                            cons = consistency_scores[decision].get(pair_key, ConsistencyOutput()).consistency
-                            cons_prod *= cons
-                    total += w * conf * cons_prod
+                    # cons_prod = 1.0
+                    # for name2 in analyses.keys():
+                    #     if name2 != name:
+                    #         pair_key = f"{name}-{name2}" if name < name2 else f"{name2}-{name}"
+                    #         cons = consistency_scores[decision].get(pair_key, ConsistencyOutput()).consistency
+                    #         cons_prod *= cons
+                    total += w * conf
                 scores[decision] = total
                 if self.verbose:
                     print(f"Step: Score for '{decision}': {total}")
@@ -1244,11 +1246,12 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
                 except Exception as e:
                     print(f"Error in decision: {e}")
                     decision = "update code only"
+                A_content = merged_result['content_analysis']
                 if decision == 'update plan':
                     try:
                         A_plan = merged_result['plan_analysis']
                         revised_plan, _ = self.debug_plan(i, planning, {
-                            'insights': A_plan['insights'],
+                            'insights': A_plan['insights'] + "\n" + A_content['insights'],
                             'test_results': test_log,
                             'success_rate': code_score * 100,
                         }, self.data.get_prompt(item), problem_understanding, decision)
@@ -1274,7 +1277,7 @@ IMPORTANT: Your response must contain only the {self.language} code to solve thi
                     try:
                         A_code = merged_result['code_analysis']
                         revised_code, _ = self.debug_code(i, planning, best_code, {
-                            'insights': A_code['insights'],
+                            'insights': A_code['insights'] + "\n" + A_content['insights'],
                             'test_results': test_log,
                             'success_rate': code_score * 100,
                         }, self.data.get_prompt(item), problem_understanding, decision)
