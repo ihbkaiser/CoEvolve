@@ -21,6 +21,7 @@ parser.add_argument(
         "APPS",
         "XCode",
         "CC",
+        "LCB"
     ]
 )
 parser.add_argument(
