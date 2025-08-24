@@ -4,6 +4,7 @@ from datasets.APPSDataset import APPSDataset
 from datasets.XCodeDataset import XCodeDataset
 from datasets.HumanEvalDataset import HumanDataset
 from datasets.CodeContestDataset import CodeContestDataset
+from datasets.LCBDataset import LCBDataset
 
 
 class DatasetFactory:
@@ -23,5 +24,7 @@ class DatasetFactory:
             return HumanDataset
         elif dataset_name == "CC":
             return CodeContestDataset
+        elif dataset_name == "LCB":
+            return LCBDataset
         else:
             raise Exception(f"Unknown dataset name {dataset_name}")

@@ -1,6 +1,15 @@
 import os
 from os.path import join, dirname
 
+
+LCB_DATA_DIR = join(
+    "data",
+    "LiveCodeBench",
+)
+LCB_DATA_PATH = join(
+    LCB_DATA_DIR,
+    "test_tiny.jsonl"
+)
 # HumanEval Dataset
 HUMAN_DATA_DIR = join(
     "data",
